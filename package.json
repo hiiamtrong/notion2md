@@ -1,0 +1,24 @@
+{
+  "name": "notion-md",
+  "version": "0.1.0",
+  "description": "Dump a Notion page (private ones too) to Markdown using a logged-in Chrome profile via headless Playwright",
+  "type": "module",
+  "bin": {
+    "notion-md": "bin/notion-md.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "playwright-core": "^1.64.1"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}
