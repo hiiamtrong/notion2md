@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { cloneProfile, listProfiles, resolveProfile } from '../src/chrome.ts';
 
 function chromeDir(info_cache: Record<string, { name?: string; user_name?: string }>, last_used?: string) {
-  const root = mkdtempSync(join(tmpdir(), 'notion-md-chrome-'));
+  const root = mkdtempSync(join(tmpdir(), 'notion2md-chrome-'));
   writeFileSync(join(root, 'Local State'), JSON.stringify({ profile: { info_cache, last_used } }));
   return root;
 }
@@ -58,7 +58,7 @@ test('resolveProfile: unknown, and names or emails shared by several profiles, a
 
 test('resolveProfile and listProfiles: empty profile list and missing Local State', () => {
   const empty = chromeDir({});
-  const missing = mkdtempSync(join(tmpdir(), 'notion-md-chrome-'));
+  const missing = mkdtempSync(join(tmpdir(), 'notion2md-chrome-'));
   try {
     assert.deepEqual(listProfiles(empty), []);
     assert.throws(() => resolveProfile(empty), { code: 'PROFILE_NOT_FOUND', exit: 3 });

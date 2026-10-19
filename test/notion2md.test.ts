@@ -280,7 +280,7 @@ test('layout: a page that lists an ancestor as its child does not recurse foreve
 });
 
 test('writeTree: one file per page, relative encoded links to fetched pages, notion URL for the rest', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'notion-md-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'notion2md-test-'));
   try {
     const pages: Record<string, Record<string, any>[]> = {
       [ID]: [{ id: ID, type: 'page', space_id: 'sp', properties: { title: [['Knowledge Map']] }, content: ['c1', 'c2'] }, { id: 'c1', type: 'page', properties: { title: [['../../Evil']] }, content: [] }, { id: 'c2', type: 'page', properties: { title: [['Later']] }, content: ['t'] }],
@@ -475,7 +475,7 @@ test('crawl: a database can be the root, its rows follow at depth 1', async () =
 });
 
 test('writeTree: links between fetched pages become file links, databases get an index, rows list their fields', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'notion-md-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'notion2md-test-'));
   try {
     const store = await loadTree(workspace().api, HUB, { depth: Infinity });
     writeTree(store, HUB, dir);
@@ -518,7 +518,7 @@ test('crawl: a failure on a page keeps the pages before it, reports the page it 
   assert.match(store.error!, /rate limit/);
   assert.deepEqual([...store.expanded], [HUB, 'db', 'kid']);
   assert.equal(store.skipped[0], P1, 'the page that failed is first in the skipped list');
-  const dir = mkdtempSync(join(tmpdir(), 'notion-md-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'notion2md-test-'));
   try {
     assert.equal(writeTree(store, HUB, dir).size, 3);
   } finally {
@@ -582,7 +582,7 @@ test('no access: the list lands in _no-access.md next to the pages, with a link 
     if (endpoint === 'loadCachedPageChunkV2' && body.page.id === P2) throw refuse();
     return inner(endpoint, body);
   };
-  const dir = mkdtempSync(join(tmpdir(), 'notion-md-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'notion2md-test-'));
   try {
     const store = await loadTree(api, HUB, { depth: Infinity });
     writeTree(store, HUB, dir);
@@ -591,7 +591,7 @@ test('no access: the list lands in _no-access.md next to the pages, with a link 
     assert.match(report, /- \[ViaUrl\]\(https:\/\/www\.notion\.so\/22222222222222222222222222222222\) \(linked from \[Hub\]\(Hub\.md\)\)/);
     assert.match(report, /- \[ghost\]\(https:\/\/www\.notion\.so\/ghost\) \(linked from \[Hub\]\(Hub\.md\)\)/);
     const clean = await loadTree(workspace().api, HUB, { depth: Infinity });
-    const dir2 = mkdtempSync(join(tmpdir(), 'notion-md-test-'));
+    const dir2 = mkdtempSync(join(tmpdir(), 'notion2md-test-'));
     writeTree({ ...clean, noAccess: new Map() }, HUB, dir2);
     assert.equal(readdirSync(dir2, { recursive: true }).map(String).includes('_no-access.md'), false, 'no file when nothing was refused');
     rmSync(dir2, { recursive: true, force: true });

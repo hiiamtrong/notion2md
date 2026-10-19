@@ -40,7 +40,7 @@ export function listProfiles(root: string): Profile[] {
 export function resolveProfile(root: string, wanted?: string): Profile {
   const profiles = listProfiles(root);
   const w = wanted?.toLowerCase();
-  const notFound = () => new CliError('PROFILE_NOT_FOUND', `No Chrome profile matches "${wanted ?? '(last used)'}"`, `Run \`notion-md profiles\`. Known: ${profiles.map((p) => p.dir).join(', ')}`, 3);
+  const notFound = () => new CliError('PROFILE_NOT_FOUND', `No Chrome profile matches "${wanted ?? '(last used)'}"`, `Run \`notion2md profiles\`. Known: ${profiles.map((p) => p.dir).join(', ')}`, 3);
   if (w === undefined) {
     const last = profiles.find((p) => p.lastUsed) ?? profiles[0];
     if (!last) throw notFound();
@@ -61,7 +61,7 @@ export function resolveProfile(root: string, wanted?: string): Profile {
 // Chrome refuses automation on its default data dir (v136+) and locks a profile that is open,
 // so work on a throwaway copy holding only what login needs (cookies live in Network/).
 export function cloneProfile(root: string, dir: string): string {
-  const tmp = mkdtempSync(join(tmpdir(), 'notion-md-'));
+  const tmp = mkdtempSync(join(tmpdir(), 'notion2md-'));
   cpSync(join(root, 'Local State'), join(tmp, 'Local State'));
   for (const f of ['Network', 'Cookies', 'Cookies-journal', 'Preferences']) {
     const src = join(root, dir, f);

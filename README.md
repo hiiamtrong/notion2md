@@ -1,12 +1,12 @@
-# notion-md
+# notion2md
 
 Export a Notion page, or a whole tree of linked pages and databases, to Markdown. It drives headless Chrome with the login of a profile you already have, so private pages work with no integration token and no sharing step.
 
 Built to be called by people and by AI agents: results go to stdout, progress and errors go to stderr, nothing is ever prompted, and every failure has a stable exit code.
 
 ```bash
-notion-md "https://www.notion.so/team/Knowledge-Map-01234567..." --profile 70 > map.md
-notion-md "https://www.notion.so/team/Knowledge-Map-01234567..." --profile 70 --depth all --out ./knowledge-map
+notion2md "https://www.notion.so/team/Knowledge-Map-01234567..." --profile 70 > map.md
+notion2md "https://www.notion.so/team/Knowledge-Map-01234567..." --profile 70 --depth all --out ./knowledge-map
 ```
 
 ## Features
@@ -31,10 +31,10 @@ notion-md "https://www.notion.so/team/Knowledge-Map-01234567..." --profile 70 --
 ## Installation
 
 ```bash
-git clone https://github.com/hiiamtrong/notion-md.git
-cd notion-md
+git clone https://github.com/hiiamtrong/notion2md.git
+cd notion2md
 npm install
-npm link        # installs the `notion-md` command
+npm link        # installs the `notion2md` command
 ```
 
 Use `npm link`, not `npm install -g .`. Node refuses to run TypeScript from inside `node_modules`, so the tool works from a clone but not as a copied or published package. Publishing would need a build step.
@@ -45,13 +45,13 @@ On macOS the first run may show a Keychain prompt for "Chrome Safe Storage". Cho
 
 ```bash
 # 1. Find the Chrome profile that is logged in to Notion
-notion-md profiles
+notion2md profiles
 
 # 2. Export one page to stdout
-notion-md "https://www.notion.so/team/My-Page-0123456789abcdef0123456789abcdef" -p "Profile 2" > page.md
+notion2md "https://www.notion.so/team/My-Page-0123456789abcdef0123456789abcdef" -p "Profile 2" > page.md
 
 # 3. Export a page and everything reachable from it into a folder
-notion-md "$URL" -p "Profile 2" --depth all --out ./export
+notion2md "$URL" -p "Profile 2" --depth all --out ./export
 ```
 
 A bare 32 character page id works in place of the URL.
@@ -59,8 +59,8 @@ A bare 32 character page id works in place of the URL.
 ## Usage
 
 ```
-notion-md <url|page-id> [options]
-notion-md profiles [--json]
+notion2md <url|page-id> [options]
+notion2md profiles [--json]
 ```
 
 | Option | Description |
@@ -208,7 +208,7 @@ npm run typecheck    # tsc, no emit
 The tests run against a fake Notion workspace, so they need no network and no Chrome. They cover URL parsing and the host allow list, Markdown rendering, pagination, lazy toggle children, link and database crawling, no access and rate limit handling, the folder layout, and edge cases such as empty input, batches of 100 and 101 ids, page cycles and hostile titles.
 
 ```
-bin/notion-md.ts   CLI entry: arguments, browser lifecycle, progress, output
+bin/notion2md.ts   CLI entry: arguments, browser lifecycle, progress, output
 src/notion.ts      parsing, API calls, crawl, rate limit pacing
 src/markdown.ts    block tree to Markdown
 src/tree.ts        folder layout and file writing

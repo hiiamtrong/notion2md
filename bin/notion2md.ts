@@ -10,11 +10,11 @@ import { apiError, createPacer, loadTree, parseDepth, parseMaxPages, parsePageId
 import { NO_ACCESS_FILE, writeTree } from '../src/tree.ts';
 import type { Api, ApiResponse } from '../src/types.ts';
 
-const HELP = `notion-md: dump a Notion page to Markdown using a logged-in Chrome profile (headless Playwright)
+const HELP = `notion2md: dump a Notion page to Markdown using a logged-in Chrome profile (headless Playwright)
 
 USAGE
-  notion-md <url|page-id> [options]   Markdown to stdout
-  notion-md profiles [--json]         List Chrome profiles you can pass to --profile
+  notion2md <url|page-id> [options]   Markdown to stdout
+  notion2md profiles [--json]         List Chrome profiles you can pass to --profile
 
 OPTIONS
   -p, --profile <p>        Chrome profile: dir ("Profile 70"), number (70), display name or email.
@@ -59,11 +59,11 @@ EXIT CODES
   0 ok, 1 other, 2 bad usage/input, 3 profile not found, 4 not logged in or no access, 5 browser failed
 
 EXAMPLES
-  notion-md "https://app.notion.com/p/team/Knowledge-Map-0123..." --profile 70
-  notion-md 0123456789abcdef0123456789abcdef -p me@company.com -o map.md
-  notion-md "$URL" -p 70 --depth 1 --out ./export
-  notion-md "$URL" -p 70 --depth all --out ./knowledge-map --max-pages 300
-  notion-md profiles --json
+  notion2md "https://app.notion.com/p/team/Knowledge-Map-0123..." --profile 70
+  notion2md 0123456789abcdef0123456789abcdef -p me@company.com -o map.md
+  notion2md "$URL" -p 70 --depth 1 --out ./export
+  notion2md "$URL" -p 70 --depth all --out ./knowledge-map --max-pages 300
+  notion2md profiles --json
 `;
 
 const { values: opt, positionals } = parseArgs({
@@ -258,7 +258,7 @@ try {
   else if (opt.version) print('0.1.0');
   else if (positionals[0] === 'profiles') await profilesCommand();
   else if (positionals.length === 1) await dumpCommand(positionals[0]);
-  else throw new CliError('BAD_INPUT', 'Expected exactly one page URL or id', 'See notion-md --help', 2);
+  else throw new CliError('BAD_INPUT', 'Expected exactly one page URL or id', 'See notion2md --help', 2);
 } catch (e) {
   const err = e instanceof CliError ? e : new CliError('ERROR', (e as Error).message, undefined, 1);
   process.stderr.write(`error[${err.code}]: ${err.message}\n${err.hint ? `hint: ${err.hint}\n` : ''}`);

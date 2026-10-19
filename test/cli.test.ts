@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-const BIN = join(import.meta.dirname, '../bin/notion-md.ts');
+const BIN = join(import.meta.dirname, '../bin/notion2md.ts');
 const ID = '0123456789abcdef0123456789abcdef';
 
 // Every case below must fail before a browser is launched, so these run in milliseconds.
 // --user-data-dir points at an empty dir: if validation were skipped, the run would end with exit 3, never launch Chrome.
-const scratch = mkdtempSync(join(tmpdir(), 'notion-md-cli-'));
+const scratch = mkdtempSync(join(tmpdir(), 'notion2md-cli-'));
 const run = (...args: string[]) => spawnSync(process.execPath, [BIN, '--user-data-dir', scratch, ...args], { encoding: 'utf8' });
 
 test('bad usage exits 2 with a code on stderr and nothing on stdout', () => {

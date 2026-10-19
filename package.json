@@ -1,10 +1,10 @@
 {
-  "name": "notion-md",
+  "name": "notion2md",
   "version": "0.1.0",
   "description": "Dump a Notion page (private ones too) to Markdown using a logged-in Chrome profile via headless Playwright",
   "type": "module",
   "bin": {
-    "notion-md": "bin/notion-md.ts"
+    "notion2md": "bin/notion2md.ts"
   },
   "engines": {
     "node": ">=22.18"
