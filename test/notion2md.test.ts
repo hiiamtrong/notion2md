@@ -306,6 +306,17 @@ test('layout: children nest in a folder, same-name siblings get an id suffix (ca
   ]);
 });
 
+test('layout: pages with the same title and the same first 8 id characters still get different files', () => {
+  const store = newStore();
+  const ids = ['32e926e2-09a3-8001-0000-000000000001', '32e926e2-09a3-8002-0000-000000000002', '32e926e2-09a3-8003-0000-000000000003'];
+  store.blocks.root = { id: 'root', type: 'page', properties: { title: [['Root']] } };
+  for (const id of ids) store.blocks[id] = { id, type: 'page', properties: { title: [['Row']] } };
+  store.expanded = new Set(['root', ...ids]);
+  store.children = new Map([['root', ids]]);
+  const paths = [...layout(store, 'root').values()];
+  assert.equal(new Set(paths.map((p) => p.toLowerCase())).size, 4, paths.join(', '));
+});
+
 test('layout: a page that lists an ancestor as its child does not recurse forever', () => {
   const store = treeStore();
   store.children.set('a1', ['root']);

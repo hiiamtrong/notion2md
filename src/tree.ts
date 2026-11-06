@@ -28,9 +28,11 @@ export function layout(store: Store, rootId: string): Map<string, string> {
   const place = (id: string, dir: string) => {
     const names = taken.get(dir) ?? new Set<string>();
     taken.set(dir, names);
-    let base = slug(pageTitle(store, id));
+    const title = slug(pageTitle(store, id));
+    let base = title;
     // Case-insensitive on purpose: macOS and Windows would merge "A.md" and "a.md".
-    if (names.has(base.toLowerCase())) base = `${base.slice(0, MAX_NAME - 9)}-${id.slice(0, 8)}`;
+    // Rows created together share the first 8 characters of their id, so the suffix grows until the name is free.
+    for (let n = 8; names.has(base.toLowerCase()); n += 4) base = `${title.slice(0, MAX_NAME - n - 1)}-${id.replaceAll('-', '').slice(0, n)}`;
     names.add(base.toLowerCase());
     paths.set(id, posix.join(dir, `${base}.md`));
     for (const child of store.children.get(id) ?? []) if (store.expanded.has(child) && !paths.has(child)) place(child, posix.join(dir, base));
