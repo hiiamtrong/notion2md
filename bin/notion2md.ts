@@ -122,7 +122,7 @@ async function dumpCommand(input: string) {
   const root = opt['user-data-dir'] ?? defaultChromeRoot();
   const profile = resolveProfile(root, opt.profile);
   log(`Using ${profile.dir} (${profile.name}${profile.email ? `, ${profile.email}` : ''})`);
-  const tmp = cloneProfile(root, profile.dir);
+  const tmp = cloneProfile(root, profile.dir, ['notion.so', 'notion.com', 'notion.site']);
   let ctx: BrowserContext | undefined;
   const cleanup = async () => {
     await ctx?.close().catch(() => {});

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { cloneProfile, listProfiles, resolveProfile } from '../src/chrome.ts';
 
@@ -69,19 +70,48 @@ test('resolveProfile and listProfiles: empty profile list and missing Local Stat
   }
 });
 
-test('cloneProfile: copies only Local State, cookies and preferences', () => {
+test('cloneProfile: keeps only Local State and the cookies of the given hosts, no Preferences', () => {
   const root = chromeDir(PROFILES);
   mkdirSync(join(root, 'Default/Network'), { recursive: true });
   mkdirSync(join(root, 'Default/Cache'), { recursive: true });
-  writeFileSync(join(root, 'Default/Network/Cookies'), 'c');
+  const db = new DatabaseSync(join(root, 'Default/Network/Cookies'));
+  db.exec('CREATE TABLE cookies (host_key TEXT, name TEXT)');
+  for (const h of ['.notion.so', 'www.notion.so', '.google.com', 'accounts.google.com', 'evilnotion.so']) {
+    db.prepare('INSERT INTO cookies VALUES (?, ?)').run(h, 'c');
+  }
+  db.close();
   writeFileSync(join(root, 'Default/Preferences'), '{}');
   writeFileSync(join(root, 'Default/Cache/big'), 'x');
-  const tmp = cloneProfile(root, 'Default');
+  const tmp = cloneProfile(root, 'Default', ['notion.so']);
   try {
     assert.deepEqual(
-      [...new Set(['Local State', 'Default/Network/Cookies', 'Default/Preferences', 'Default/Cache/big'].filter((f) => existsAt(tmp, f)))],
-      ['Local State', 'Default/Network/Cookies', 'Default/Preferences'],
+      ['Local State', 'Default/Network/Cookies', 'Default/Preferences', 'Default/Cache/big'].filter((f) => existsAt(tmp, f)),
+      ['Local State', 'Default/Network/Cookies'],
     );
+    const kept = new DatabaseSync(join(tmp, 'Default/Network/Cookies'));
+    assert.deepEqual(
+      (kept.prepare('SELECT host_key FROM cookies ORDER BY host_key').all() as { host_key: string }[]).map((r) => r.host_key),
+      ['.notion.so', 'www.notion.so'],
+    );
+    kept.close();
+  } finally {
+    rmSync(root, { recursive: true });
+    rmSync(tmp, { recursive: true });
+  }
+});
+
+test('cloneProfile: older Chrome keeps cookies at the profile root, and they are filtered the same way', () => {
+  const root = chromeDir(PROFILES);
+  mkdirSync(join(root, 'Default'), { recursive: true });
+  const db = new DatabaseSync(join(root, 'Default/Cookies'));
+  db.exec('CREATE TABLE cookies (host_key TEXT, name TEXT)');
+  for (const h of ['.notion.so', '.google.com']) db.prepare('INSERT INTO cookies VALUES (?, ?)').run(h, 'c');
+  db.close();
+  const tmp = cloneProfile(root, 'Default', ['notion.so']);
+  try {
+    const kept = new DatabaseSync(join(tmp, 'Default/Cookies'));
+    assert.deepEqual((kept.prepare('SELECT host_key FROM cookies').all() as { host_key: string }[]).map((r) => r.host_key), ['.notion.so']);
+    kept.close();
   } finally {
     rmSync(root, { recursive: true });
     rmSync(tmp, { recursive: true });

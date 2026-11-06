@@ -1,6 +1,7 @@
-import { cpSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { CliError } from './errors.ts';
 
 export interface Profile {
@@ -59,13 +60,32 @@ export function resolveProfile(root: string, wanted?: string): Profile {
 }
 
 // Chrome refuses automation on its default data dir (v136+) and locks a profile that is open,
-// so work on a throwaway copy holding only what login needs (cookies live in Network/).
-export function cloneProfile(root: string, dir: string): string {
+// so work on a throwaway copy holding only the cookies of `hosts`. Google cookies and the signed-in
+// Preferences must stay out: a clone that sees the browser account without its refresh token can
+// sign the real profile out of Google server-side.
+export function cloneProfile(root: string, dir: string, hosts: string[]): string {
   const tmp = mkdtempSync(join(tmpdir(), 'notion2md-'));
   cpSync(join(root, 'Local State'), join(tmp, 'Local State'));
-  for (const f of ['Network', 'Cookies', 'Cookies-journal', 'Preferences']) {
+  for (const f of ['Network/Cookies', 'Cookies']) {
     const src = join(root, dir, f);
-    if (existsSync(src)) cpSync(src, join(tmp, dir, f), { recursive: true });
+    if (!existsSync(src)) continue;
+    const dst = join(tmp, dir, f);
+    mkdirSync(dirname(dst), { recursive: true });
+    cpSync(src, dst);
+    keepCookies(dst, hosts);
   }
   return tmp;
+}
+
+function keepCookies(file: string, hosts: string[]): void {
+  const db = new DatabaseSync(file);
+  try {
+    const del = db.prepare('DELETE FROM cookies WHERE host_key = ?');
+    for (const { host_key } of db.prepare('SELECT DISTINCT host_key FROM cookies').all() as { host_key: string }[]) {
+      const h = host_key.replace(/^\./, '');
+      if (!hosts.some((k) => h === k || h.endsWith(`.${k}`))) del.run(host_key);
+    }
+  } finally {
+    db.close();
+  }
 }

@@ -177,7 +177,7 @@ Everything that can be checked up front (depth, timeout, URL host, output folder
 
 ## How it works
 
-1. **Copy the login.** `Local State` and the cookie files of the chosen profile are copied to a temporary directory. Chrome refuses automation on its real data directory and locks a profile that is open, so working on a copy lets Chrome stay running. The copy is deleted when the tool exits, including on Ctrl-C and SIGTERM.
+1. **Copy the login.** `Local State` and the Notion cookies of the chosen profile are copied to a temporary directory. Chrome refuses automation on its real data directory and locks a profile that is open, so working on a copy lets Chrome stay running. The copy is deleted when the tool exits, including on Ctrl-C and SIGTERM.
 2. **Open Notion.** The page loads in headless Chrome using that copy.
 3. **Call the web API from inside the page.** `loadCachedPageChunkV2`, `syncRecordValues` and `queryCollection` are called with `fetch` from the page itself. They run with the profile's cookies and Chrome's own network stack and return the full block tree, including blocks that are collapsed in the UI.
 4. **Render.** Blocks are converted to Markdown. Links to pages that were fetched are rewritten to relative file links.
@@ -185,7 +185,7 @@ Everything that can be checked up front (depth, timeout, URL host, output folder
 ## Security and privacy
 
 - The browser carries your real login, so only `notion.so`, `notion.com` and `notion.site` URLs are accepted. Any other host is rejected with `BAD_INPUT` before Chrome starts. This matters when the URL comes from an agent that may have been prompt injected.
-- Only cookies and preferences are copied from your profile. The copy lives in a private temporary directory and is removed at exit. Your original profile is read, never written.
+- Only `Local State` and the cookies of `notion.so`, `notion.com` and `notion.site` are copied from your profile. Google cookies and `Preferences` are left out on purpose, so the copy cannot sign your real profile out of Google. The copy lives in a private temporary directory and is removed at exit. Your original profile is read, never written.
 - The tool itself only talks to Notion and sends no telemetry. The Chrome it launches behaves like any other Chrome.
 
 ## Limitations
