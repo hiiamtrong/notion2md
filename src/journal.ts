@@ -39,16 +39,24 @@ export function appendEntry(path: string, entry: Entry): void {
   appendFileSync(path, `${JSON.stringify(entry)}\n`);
 }
 
-/** Lines in order. A last line cut short by a kill is dropped, and nothing after it is trusted. */
+/**
+ * Lines in order. A last line cut short by a kill is dropped, and nothing after it is trusted.
+ * The file is split as bytes: a big crawl's journal is longer than the longest string V8 can hold.
+ */
 export function readJournal(path: string): Entry[] {
+  const bytes = readFileSync(path);
   const entries: Entry[] = [];
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    if (!line) continue;
-    try {
-      entries.push(JSON.parse(line));
-    } catch {
-      break;
+  for (let start = 0; start < bytes.length; ) {
+    let end = bytes.indexOf(10, start);
+    if (end < 0) end = bytes.length;
+    if (end > start) {
+      try {
+        entries.push(JSON.parse(bytes.toString('utf8', start, end)));
+      } catch {
+        break;
+      }
     }
+    start = end + 1;
   }
   return entries;
 }
