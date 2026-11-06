@@ -198,7 +198,8 @@ Everything that can be checked up front (depth, timeout, URL host, output folder
 
 - It uses Notion's undocumented web API, so it can break when Notion changes it.
 - Only the first view of a database is read, without filters, so all rows come back. A database with two views produces two index files listing the same rows. A database is cut at 5000 rows.
-- Row fields are exported as text. People appear as `@user`, relations as links.
+- Row fields are exported as text. People appear as `@Name` (a user group as `@group`, its name cannot be read), relations as links, and `Created time`, `Last edited time`, `Created by` and `Last edited by` are written from the row itself. Formula columns are not exported: Notion computes them in the browser and stores no value.
+- Link previews of other services (a GitHub pull request) become `[title](url)`. Columns are flattened into the page, so their side by side layout is lost.
 - Images hosted by Notion link to `notion.so/image/...`, which only opens with a logged in session. They are not downloaded.
 - Crawling a large workspace takes minutes, see [Cost and limits](#cost-and-limits).
 - Linux and Windows are untested.

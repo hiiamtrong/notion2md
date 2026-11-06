@@ -10,6 +10,16 @@ type Href = (pageId: string) => string;
 
 const collectionName = (id: string | undefined, store: Doc) => inlineText(id ? store.collections[id]?.name : undefined, store);
 
+const WEB = /^https?:\/\//;
+
+/** A link preview of something in another service (a GitHub pull request): its title and address sit in `format`, not in `properties`. */
+function external(b: Block | undefined): { title: string; uri: string } | undefined {
+  const uri = b?.format?.uri;
+  if (typeof uri !== 'string' || !WEB.test(uri)) return undefined;
+  const title = b!.format!.attributes?.find((a: { id: string }) => a.id === 'title')?.values?.[0];
+  return { title: typeof title === 'string' && title ? title : uri, uri };
+}
+
 function inlineText(runs: RichText | undefined, store: Doc, href: Href = pageUrl): string {
   return (runs ?? []).map(([text, decos = []]) => {
     let s = text;
@@ -40,8 +50,14 @@ function inlineText(runs: RichText | undefined, store: Doc, href: Href = pageUrl
       }
       else if (tag === 'p') {
         const target = store.blocks[arg];
-        link = href(arg);
-        s = inlineText(target?.properties?.title, store) || collectionName(target?.collection_id, store) || 'page';
+        const ext = external(target);
+        link = ext?.uri ?? href(arg);
+        s = ext?.title ?? (inlineText(target?.properties?.title, store) || collectionName(target?.collection_id, store) || 'page');
+      }
+      else if (tag === 'eoi') {
+        const ext = external(store.blocks[arg]);
+        link = ext?.uri;
+        s = ext?.title ?? 'link';
       }
     }
     const [, lead, core, trail] = /^(\s*)([\s\S]*?)(\s*)$/.exec(s)!;
@@ -58,7 +74,7 @@ function inlineText(runs: RichText | undefined, store: Doc, href: Href = pageUrl
   }).join('');
 }
 
-const HEADINGS = { header: '##', sub_header: '###', sub_sub_header: '####' };
+const HEADINGS = { header: '##', sub_header: '###', sub_sub_header: '####', header_4: '#####' };
 
 export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl): string {
   const { blocks } = store;
@@ -66,11 +82,20 @@ export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl): 
   const plain = (b: Block, key: string) => (b.properties?.[key] ?? []).map((r) => r[0]).join('');
 
   // Rows of a database carry their fields (Status, Owner, ...) as properties named by the collection schema.
+  const stamp = (ms?: number) => (ms ? new Date(ms).toISOString() : '');
+  const who = (id?: string) => (id ? (store.users?.[id] ? `@${store.users[id]}` : '@user') : '');
+  // These columns are not in `properties`: Notion keeps the values on the block itself.
+  const builtin: Record<string, (b: Block) => string> = {
+    created_time: (b) => stamp(b.created_time),
+    last_edited_time: (b) => stamp(b.last_edited_time),
+    created_by: (b) => who(b.created_by_id),
+    last_edited_by: (b) => who(b.last_edited_by_id),
+  };
   function rowProperties(b: Block): string[] {
     const schema = b.parent_table === 'collection' && b.parent_id ? store.collections[b.parent_id]?.schema : undefined;
     return Object.entries(schema ?? {})
       .filter(([, col]) => col.type !== 'title')
-      .map(([key, col]) => [col.name, text(b, key).trim()] as const)
+      .map(([key, col]) => [col.name, builtin[col.type]?.(b) ?? text(b, key).trim()] as const)
       .filter(([, value]) => value)
       .map(([name, value]) => `- **${name}:** ${value}`);
   }
@@ -108,7 +133,7 @@ export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl): 
           return [`# ${title}`, '', ...(props.length ? [...props, ''] : []), ...kids(0)];
         }
         return para(`${pad}[${title || 'Untitled'}](${hrefOf(b.id)})`);
-      case 'header': case 'sub_header': case 'sub_sub_header':
+      case 'header': case 'sub_header': case 'sub_sub_header': case 'header_4':
         return [...para(`${pad}${HEADINGS[b.type]} ${title}`), ...kids()];
       case 'text':
         return [...para(`${pad}${title}`), ...kids()];
@@ -164,6 +189,12 @@ export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl): 
         const target = b.format?.alias_pointer?.id;
         return target ? para(`${pad}[${text(blocks[target] ?? {}) || 'Linked page'}](${hrefOf(target)})`) : [];
       }
+      case 'external_object_instance': case 'external_object_instance_page': {
+        const ext = external(b);
+        return ext ? para(`${pad}[${ext.title}](${ext.uri})`) : [];
+      }
+      case 'transclusion_reference': // a copy of a synced block: the content lives in the block it points at
+        return children(blocks[b.format?.transclusion_reference_pointer?.id]?.content, indent);
       case 'table_of_contents': case 'breadcrumb': case 'table_row':
         return [];
       default:
