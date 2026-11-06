@@ -172,6 +172,39 @@ test('markdown: empty runs, undecorated runs and unknown mentions do not break i
   assert.equal(md, '# T\n\nplain[page](https://www.notion.so/zz)\n');
 });
 
+test('markdown: a link mention renders as a link with its title, falling back to the URL', () => {
+  const lm = (arg: Record<string, string>) => ['‣', [['lm', arg]]];
+  const md = doc({
+    id: 't',
+    type: 'text',
+    properties: { title: [lm({ href: 'https://cli.github.com/', title: '\u200eGitHub CLI' }), [' '], lm({ href: 'https://code.visualstudio.com/' }), [' (seats)']] },
+  });
+  assert.equal(md, '# T\n\n[GitHub CLI](https://cli.github.com/) [https://code.visualstudio.com/](https://code.visualstudio.com/) (seats)\n');
+  assert.equal(doc({ id: 't', type: 'text', properties: { title: [lm({})] } }), '# T\n');
+});
+
+test('markdown: a user mention shows the name when known, else @user; a group mention shows @group', () => {
+  const blocks: Record<string, Block> = {
+    r: { id: 'r', type: 'page', properties: { title: [['T']] }, content: ['t'] },
+    t: { id: 't', type: 'text', properties: { title: [['‣', [['u', 'u1']]], [' '], ['‣', [['u', 'u2']]], [' '], ['‣', [['g', 'g1', 'sp']]]] } },
+  };
+  assert.equal(toMarkdown({ blocks, collections: {}, users: { u1: 'Lu John' } }, 'r'), '# T\n\n@Lu John @user @group\n');
+});
+
+test('loadTree: names of mentioned people are fetched once, in the notion_user table', async () => {
+  const calls: unknown[] = [];
+  const page = { id: ID, type: 'page', space_id: 'sp', properties: { title: [['Root']] }, content: ['t'] };
+  const t = { id: 't', type: 'text', properties: { title: [['‣', [['u', 'u1']]], ['‣', [['u', 'u1']]]] } };
+  const api: Api = async (endpoint, body: any) => {
+    if (endpoint === 'loadCachedPageChunkV2') return { recordMap: recordMap(page, t), cursors: [{ stack: [] }] };
+    calls.push(body.requests.map((r: any) => `${r.pointer.table}:${r.pointer.id}`));
+    return { recordMap: { notion_user: { u1: { value: { value: { id: 'u1', name: 'Lu John' } } } } } };
+  };
+  const store = await loadTree(api, ID);
+  assert.deepEqual(calls, [['notion_user:u1']]);
+  assert.match(toMarkdown(store, ID), /@Lu John@Lu John/);
+});
+
 const withHiddenKids = (n: number) => {
   const calls: unknown[] = [];
   const kids = Array.from({ length: n }, (_, i) => `k${i}`);

@@ -24,6 +24,8 @@ export interface Collection {
 export interface Store {
   blocks: Record<string, Block>;
   collections: Record<string, Collection>;
+  /** Display names of mentioned people, by Notion user id. */
+  users: Record<string, string>;
   expanded: Set<string>;
   children: Map<string, string[]>;
   rows: Map<string, string[]>;
@@ -48,6 +50,7 @@ export interface Rec {
 export interface RecordMap {
   block?: Record<string, Rec>;
   collection?: Record<string, Rec>;
+  notion_user?: Record<string, Rec>;
 }
 
 export interface ApiResponse {

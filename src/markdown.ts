@@ -5,7 +5,7 @@ const NOTION = 'https://www.notion.so/';
 export const pageUrl = (id: string) => NOTION + id.replaceAll('-', '');
 const NOTION_HOSTED = /^attachment:|secure\.notion-static\.com|prod-files-secure/;
 
-type Doc = Pick<Store, 'blocks' | 'collections'> & { rows?: Store['rows'] };
+type Doc = Pick<Store, 'blocks' | 'collections'> & { rows?: Store['rows']; users?: Store['users'] };
 type Href = (pageId: string) => string;
 
 const collectionName = (id: string | undefined, store: Doc) => inlineText(id ? store.collections[id]?.name : undefined, store);
@@ -31,7 +31,13 @@ function inlineText(runs: RichText | undefined, store: Doc, href: Href = pageUrl
       }
       else if (tag === 'e') return `$${arg}$`;
       else if (tag === 'd') s = arg.end_date ? `${arg.start_date} to ${arg.end_date}` : arg.start_date;
-      else if (tag === 'u') s = '@user';
+      else if (tag === 'u') s = store.users?.[arg] ? `@${store.users[arg]}` : '@user';
+      else if (tag === 'g') s = '@group'; // a user group: Notion gives no record to read its name from
+      else if (tag === 'lm') {
+        // A link preview pasted as a mention: Notion stores it as "‣" and keeps the page title and URL in the decoration.
+        link = arg.href;
+        s = (arg.title ?? '').replace(/\u200e/g, '').trim() || arg.href || '';
+      }
       else if (tag === 'p') {
         const target = store.blocks[arg];
         link = href(arg);
