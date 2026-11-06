@@ -68,6 +68,8 @@ notion2md profiles [--json]
 | `-p, --profile <p>` | Chrome profile: directory name (`Profile 70`), number (`70`), display name or email. Default: the profile Chrome used last. |
 | `-d, --depth <n\|all>` | How many hops to follow from the page (default `0`). See [Crawling](#crawling). A depth above 0 needs `--out <dir>`. |
 | `--max-pages <n\|all>` | Stop after fetching this many pages (default `1000`). |
+| `--concurrency <n>` | Pages fetched at the same time, 1 to 16 (default `1`). One process with 4 is about 3x faster. Several processes at once hit Notion's rate limit (429) sooner, which slows every fetch down. |
+| `--resume` | Continue a crawl that was stopped or killed in `--out`, without fetching the pages it already has. Needs `--depth` above 0. |
 | `-o, --out <path>` | Depth 0: write the Markdown to this file and print its path. Depth above 0: the output folder. |
 | `--json` | Print a JSON result instead of Markdown. Failures are JSON too. |
 | `--timeout <sec>` | Overall time limit. Default `90`, or `1800` when depth is above 0. |
@@ -93,6 +95,10 @@ With a depth above 0 the tool walks outward from the page. One hop is any of:
 - a database's rows
 
 `--depth all` has no hop limit. A page is fetched and written once, even if many pages link to it.
+
+### Resuming
+
+A crawl of a big workspace can run for hours, so each finished page is appended to `<out>/.notion2md-journal.jsonl` as it is fetched. If the run is stopped (`--max-pages`, `--timeout`, Ctrl-C, an error) or killed (a reboot, `kill -9`), run the same command again with `--resume` and it picks up where it stopped. Pages already in the journal are not fetched again, and the Markdown is written at the end as usual. `--max-pages` counts those pages too, so raise it. The journal holds only the fields the tool reads and is deleted when a crawl finishes without being cut short. Without `--resume` an old journal is replaced. A journal of another page is refused.
 
 ### Output layout
 

@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { CliError } from './errors.ts';
+import { appendEntry, readJournal, slimBlock, slimCollection, startJournal } from './journal.ts';
 import type { Api, Block, RecordMap, Store } from './types.ts';
 
 const dashed = (h: string) => `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
@@ -78,6 +80,12 @@ export function parseMaxPages(v: string | undefined): number {
   return Number(v);
 }
 
+export function parseConcurrency(v: string | undefined): number {
+  if (v === undefined) return 1;
+  if (!/^[1-9]\d*$/.test(v) || Number(v) > 16) throw new CliError('BAD_INPUT', `--concurrency must be a whole number from 1 to 16, got "${v}"`, undefined, 2);
+  return Number(v);
+}
+
 /** Seconds. Following pages, links and database rows takes minutes, so depth above 0 gets a longer default. */
 export function parseTimeout(v: string | undefined, depth: number): number {
   if (v === undefined) return depth > 0 ? 1800 : 90;
@@ -93,12 +101,16 @@ function absorb(store: Store, recordMap: RecordMap = {}): void {
     const b: Block | undefined = unwrap(rec);
     if (b?.id) {
       store.blocks[id] = b;
+      if (store.pending) store.pending.blocks[id] = b;
       store.spaceId ??= rec.spaceId ?? b.space_id;
     }
   }
   for (const [id, rec] of Object.entries(recordMap.collection ?? {})) {
     const c = unwrap(rec);
-    if (c) store.collections[id] = c;
+    if (c) {
+      store.collections[id] = c;
+      if (store.pending) store.pending.collections[id] = c;
+    }
   }
   for (const [id, rec] of Object.entries(recordMap.notion_user ?? {})) {
     const name = unwrap(rec)?.name;
@@ -127,7 +139,10 @@ function scan(rootId: string, blocks: Store['blocks']) {
     }
     if (b.type === 'alias' && b.format?.alias_pointer?.id) links.add(b.format.alias_pointer.id);
   };
+  const seen = new Set<string>();
   const visit = (id: string) => {
+    if (seen.has(id)) return; // a synced block can point back at a page that contains it
+    seen.add(id);
     for (const c of blocks[id]?.content ?? []) {
       const b = blocks[c];
       if (!b) missing.add(c);
@@ -136,6 +151,9 @@ function scan(rootId: string, blocks: Store['blocks']) {
       else {
         collectLinks(b);
         visit(c);
+        const origin = b.type === 'transclusion_reference' ? b.format?.transclusion_reference_pointer?.id : undefined;
+        if (origin && blocks[origin]) visit(origin);
+        else if (origin) missing.add(origin);
       }
     }
   };
@@ -176,11 +194,12 @@ async function resolveMentions(api: Api, store: Store): Promise<void> {
     for (const runs of Object.values(b.properties ?? {})) {
       for (const [, decos] of runs) {
         for (const [tag, arg] of decos ?? []) {
-          if (tag === 'p' && !store.blocks[arg]) ids.add(arg);
+          if ((tag === 'p' || tag === 'eoi') && !store.blocks[arg]) ids.add(arg);
           else if (tag === 'u' && !store.users[arg]) people.add(arg);
         }
       }
     }
+    if (b.parent_table === 'collection') for (const u of [b.created_by_id, b.last_edited_by_id]) if (u && !store.users[u]) people.add(u);
   }
   if (!store.spaceId) return;
   await sync(api, store, 'block', [...ids]);
@@ -218,6 +237,11 @@ export interface LoadOptions {
   /** Hops to follow from the root: nested pages, linked pages, databases, and a database's rows each count as one. */
   depth?: number;
   maxPages?: number;
+  /** Pages fetched at the same time (default 1). */
+  concurrency?: number;
+  /** File that each finished page is appended to. With `resume`, an existing one is replayed first, so those pages are not fetched again. */
+  journal?: string;
+  resume?: boolean;
   /** Stops before the next page is fetched, keeping what was loaded. */
   signal?: AbortSignal;
   onPage?: (id: string, store: Store, level: number) => void;
@@ -232,16 +256,60 @@ async function orNoAccess(work: Promise<void>): Promise<void> {
   }
 }
 
-export async function loadTree(api: Api, rootId: string, opts: LoadOptions = {}): Promise<Store> {
-  const { depth = 0, maxPages = Infinity, signal, onPage } = opts;
-  const store = newStore();
-  await loadPage(api, rootId, store);
-  if (!store.blocks[rootId]) {
-    throw new CliError('NO_ACCESS', `Page ${rootId} not returned by Notion`, 'The page is private to another account, deleted, or this Chrome profile is not logged in to Notion', 4);
+/** Rebuilds the store and the list of pages still to fetch from a journal written by an earlier run. */
+function replay(path: string, rootId: string, store: Store, queue: [string, number][], queued: Set<string>, cameFrom: Map<string, string>): void {
+  const [head, ...entries] = readJournal(path);
+  if (head?.root !== rootId) throw new CliError('BAD_INPUT', `${path} belongs to a crawl of another page`, 'Delete it, or resume with the page it was started from', 2);
+  for (const e of entries) {
+    store.spaceId ??= e.spaceId;
+    Object.assign(store.blocks, e.blocks);
+    Object.assign(store.collections, e.collections);
+    if (e.done) {
+      store.expanded.add(e.done);
+      if (e.rows) store.rows.set(e.done, e.rows);
+      if (e.children) store.children.set(e.done, e.children);
+    }
+    for (const [id, level, from] of e.queued ?? []) {
+      if (queued.has(id)) continue;
+      queued.add(id);
+      cameFrom.set(id, from);
+      queue.push([id, level]);
+    }
+    for (const [id, from] of e.refused ?? []) store.noAccess.set(id, from);
   }
+  const left = queue.filter(([id]) => !store.expanded.has(id) && !store.noAccess.has(id));
+  queue.splice(0, queue.length, ...left);
+}
+
+export async function loadTree(api: Api, rootId: string, opts: LoadOptions = {}): Promise<Store> {
+  const { depth = 0, maxPages = Infinity, concurrency = 1, journal, resume, signal, onPage } = opts;
+  const store = newStore();
   const queue: [string, number][] = [[rootId, 0]];
   const queued = new Set([rootId]);
   const cameFrom = new Map<string, string>();
+  if (journal) {
+    if (resume && existsSync(journal)) replay(journal, rootId, store, queue, queued, cameFrom);
+    else startJournal(journal, rootId);
+    store.pending = { blocks: {}, collections: {} };
+  }
+  // Records already in the journal, by version: Notion hands the same row back on every fetch that mentions it.
+  const written = new Map<string, number | undefined>();
+  for (const [id, r] of [...Object.entries(store.blocks), ...Object.entries(store.collections)]) written.set(id, r.version);
+  const fresh = <T extends { version?: number }>(records: Record<string, T>, slim: (r: T) => T) => {
+    const out: Record<string, T> = {};
+    for (const [id, r] of Object.entries(records)) {
+      if (r.version !== undefined && written.get(id) === r.version) continue;
+      written.set(id, r.version);
+      out[id] = slim(r);
+    }
+    return out;
+  };
+  if (!store.blocks[rootId]) {
+    await loadPage(api, rootId, store);
+    if (!store.blocks[rootId]) {
+      throw new CliError('NO_ACCESS', `Page ${rootId} not returned by Notion`, 'The page is private to another account, deleted, or this Chrome profile is not logged in to Notion', 4);
+    }
+  }
   const expandNode = async (id: string, level: number) => {
     const block = store.blocks[id]!;
     if (block.type === 'page' && id !== rootId) await loadPage(api, id, store);
@@ -262,6 +330,8 @@ export async function loadTree(api: Api, rootId: string, opts: LoadOptions = {})
     store.expanded.add(id);
     onPage?.(id, store, level);
 
+    const queuedNow: [string, number, string][] = [];
+    const refusedNow: [string, string][] = [];
     if (level < depth) {
       const all = [...new Set([...inside, ...links])];
       const unknown = all.filter((f) => !store.blocks[f] && !store.gone.has(f));
@@ -269,7 +339,10 @@ export async function loadTree(api: Api, rootId: string, opts: LoadOptions = {})
       for (const f of unknown) if (!store.blocks[f]) store.gone.add(f);
       const reachable = (f: string) => {
         const target = store.blocks[f];
-        if (!target) store.noAccess.set(f, id);
+        if (!target) {
+          store.noAccess.set(f, id);
+          refusedNow.push([f, id]);
+        }
         return !!target && NODE_TYPES.has(target.type) && target.alive !== false;
       };
       const kept = all.filter(reachable);
@@ -279,29 +352,57 @@ export async function loadTree(api: Api, rootId: string, opts: LoadOptions = {})
         queued.add(f);
         cameFrom.set(f, id);
         queue.push([f, level + 1]);
+        queuedNow.push([f, level + 1, id]);
+      }
+    }
+    if (journal) {
+      const { blocks, collections } = store.pending!;
+      appendEntry(journal, { done: id, spaceId: store.spaceId, blocks: fresh(blocks, slimBlock), collections: fresh(collections, slimCollection), rows: store.rows.get(id), children: store.children.get(id), queued: queuedNow, refused: refusedNow });
+      store.pending = { blocks: {}, collections: {} };
+    }
+  };
+
+  let inflight = 0;
+  let halted = false;
+  const tick = () => new Promise<void>((done) => setTimeout(done, 5));
+  const worker = async () => {
+    while (!halted) {
+      if (signal?.aborted && store.expanded.size) { store.truncated = 'aborted'; halted = true; break; }
+      if (!queue.length) {
+        if (!inflight) break;
+        await tick(); // a page still being fetched may add more to the queue
+        continue;
+      }
+      if (store.expanded.size + inflight >= maxPages) {
+        if (!inflight) { store.truncated = 'max-pages'; halted = true; break; }
+        await tick();
+        continue;
+      }
+      const [id, level] = queue.shift()!;
+      inflight++;
+      try {
+        await expandNode(id, level);
+      } catch (e) {
+        if (!(e instanceof CliError)) throw e;
+        if (e.code === 'NO_ACCESS' && !store.expanded.has(id)) {
+          const from = cameFrom.get(id) ?? rootId;
+          store.noAccess.set(id, from);
+          if (journal) appendEntry(journal, { refused: [[id, from]] });
+          continue;
+        }
+        // Any other failure must not throw away the pages already fetched, so stop here and keep them.
+        store.truncated = 'error';
+        store.error = e.message;
+        if (!store.expanded.has(id)) queue.unshift([id, level]);
+        halted = true;
+      } finally {
+        inflight--;
       }
     }
   };
-  while (queue.length) {
-    if (signal?.aborted && store.expanded.size) { store.truncated = 'aborted'; break; }
-    if (store.expanded.size >= maxPages) { store.truncated = 'max-pages'; break; }
-    const [id, level] = queue.shift()!;
-    try {
-      await expandNode(id, level);
-    } catch (e) {
-      if (!(e instanceof CliError)) throw e;
-      if (e.code === 'NO_ACCESS' && !store.expanded.has(id)) {
-        store.noAccess.set(id, cameFrom.get(id) ?? rootId);
-        continue;
-      }
-      // Any other failure must not throw away the pages already fetched, so stop here and keep them.
-      store.truncated = 'error';
-      store.error = e.message;
-      if (!store.expanded.has(id)) queue.unshift([id, level]);
-      break;
-    }
-  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
   store.skipped = queue.map(([id]) => id);
+  store.pending = undefined;
   await orNoAccess(resolveMentions(api, store));
   return store;
 }

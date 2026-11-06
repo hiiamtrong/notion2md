@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium, type BrowserContext } from 'playwright-core';
 import { cloneProfile, defaultChromeRoot, listProfiles, resolveProfile } from '../src/chrome.ts';
 import { CliError } from '../src/errors.ts';
+import { JOURNAL_FILE } from '../src/journal.ts';
 import { pageTitle, pageUrl, toMarkdown } from '../src/markdown.ts';
-import { apiError, createPacer, loadTree, parseDepth, parseMaxPages, parsePageId, parseTimeout } from '../src/notion.ts';
+import { apiError, createPacer, loadTree, parseConcurrency, parseDepth, parseMaxPages, parsePageId, parseTimeout } from '../src/notion.ts';
 import { NO_ACCESS_FILE, writeTree } from '../src/tree.ts';
 import type { Api, ApiResponse } from '../src/types.ts';
 
@@ -23,6 +24,9 @@ OPTIONS
                            database's rows (each hop is one level). Default 0: the page only, links stay URLs.
                            Depth above 0 writes a folder (needs --out <dir>), see FOLDER OUTPUT.
       --max-pages <n|all>  Stop after fetching n pages (default 1000). What was fetched is still written.
+      --concurrency <n>    Pages fetched at the same time, 1 to 16 (default 1). Rate limits (429) slow every fetch down.
+      --resume             Continue the crawl that was stopped or killed in --out: pages already fetched are read from
+                           its journal (.notion2md-journal.jsonl) instead of fetched again. Needs --depth above 0.
   -o, --out <path>         Depth 0: write Markdown to this file and print its path instead of the Markdown.
                            Depth above 0: the output folder.
       --json               Machine output: {ok,id,title,url,profile,truncated,skipped,noAccess,pages,markdown|out}
@@ -48,8 +52,8 @@ FOLDER OUTPUT
     out/_linked/Code Review Criteria.md       a page reached only through a link, kept flat
     out/_no-access.md                         pages Notion refused, and the page that linked to them
   Links to fetched pages are relative file links, other pages keep their notion.so URL.
-  Existing files with the same names are overwritten. Pages are fetched one by one (about 0.5 s each,
-  slower under rate limits), so a big workspace takes minutes.
+  Existing files with the same names are overwritten. Pages are fetched one by one by default (about 0.5 s each,
+  slower under rate limits, faster with --concurrency), so a big workspace takes minutes.
   Stopped early (--max-pages, --timeout, Ctrl-C once): a warning is printed, what was fetched is written,
   exit 0, and --json reports "truncated" and "skipped". Ctrl-C twice quits at once.
   A rate limit (429) is retried with waits and the pace slows down. If it keeps failing, or another
@@ -78,6 +82,8 @@ const { values: opt, positionals } = parseArgs({
     headed: { type: 'boolean', default: false },
     timeout: { type: 'string' },
     'max-pages': { type: 'string' },
+    concurrency: { type: 'string' },
+    resume: { type: 'boolean', default: false },
     progress: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
     version: { type: 'boolean', short: 'v' },
@@ -109,6 +115,9 @@ async function dumpCommand(input: string) {
   const pageId = parsePageId(input);
   const timeoutSec = parseTimeout(opt.timeout, depth);
   const maxPages = parseMaxPages(opt['max-pages']);
+  const concurrency = parseConcurrency(opt.concurrency);
+  if (opt.resume && depth === 0) throw new CliError('BAD_INPUT', '--resume continues a folder crawl', 'Add --depth above 0 and --out <dir>', 2);
+  const journal = depth > 0 ? join(opt.out!, JOURNAL_FILE) : undefined;
   const timeout = timeoutSec * 1000;
   if (depth > 0) {
     try {
@@ -194,6 +203,9 @@ async function dumpCommand(input: string) {
       return loadTree(api, pageId, {
         depth,
         maxPages,
+        concurrency,
+        journal,
+        resume: opt.resume,
         signal: stop.signal,
         onPage: (id, store, level) => {
           const n = store.expanded.size;
@@ -205,7 +217,7 @@ async function dumpCommand(input: string) {
 
     let hardTimer: NodeJS.Timeout;
     const hardLimit = new Promise<never>((_, reject) => {
-      hardTimer = setTimeout(() => reject(new CliError('TIMEOUT', `Gave up after ${timeoutSec + GRACE_SEC}s`, 'Raise --timeout', 1)), timeout + GRACE_SEC * 1000);
+      hardTimer = setTimeout(() => reject(new CliError('TIMEOUT', `Gave up after ${timeoutSec + GRACE_SEC}s`, depth > 0 ? 'Raise --timeout, or run again with --resume to continue where it stopped' : 'Raise --timeout', 1)), timeout + GRACE_SEC * 1000);
     });
     const softTimer = setTimeout(() => stop.abort(), timeout);
     const store = await Promise.race([work(), hardLimit]).finally(() => {
@@ -216,12 +228,12 @@ async function dumpCommand(input: string) {
     const reason = store.truncated === 'aborted' ? (interrupted ? 'interrupted' : 'timeout') : (store.truncated ?? null);
     const noAccess = [...store.noAccess].map(([id, from]) => ({ id, title: pageTitle(store, id) || null, url: pageUrl(id), from }));
     if (store.truncated === 'max-pages') {
-      process.stderr.write(`warning: stopped at --max-pages ${maxPages}; ${skipped} more pages were found but not fetched\n`);
+      process.stderr.write(`warning: stopped at --max-pages ${maxPages}; ${skipped} more pages were found but not fetched (add --resume --max-pages <n|all> to continue)\n`);
     } else if (store.truncated === 'aborted') {
-      process.stderr.write(`warning: ${interrupted ? 'stopped by Ctrl-C' : `--timeout ${timeoutSec}s reached`}; ${skipped} more pages were found but not fetched\n`);
+      process.stderr.write(`warning: ${interrupted ? 'stopped by Ctrl-C' : `--timeout ${timeoutSec}s reached`}; ${skipped} more pages were found but not fetched${depth > 0 ? ' (add --resume to continue)' : ''}\n`);
     }
     if (store.truncated === 'error') {
-      process.stderr.write(`warning: stopped after an error, ${skipped} pages not fetched: ${store.error}\n`);
+      process.stderr.write(`warning: stopped after an error, ${skipped} pages not fetched: ${store.error}${depth > 0 ? ' (add --resume to continue)' : ''}\n`);
       process.exitCode = 1;
     }
     if (store.noAccess.size) process.stderr.write(`warning: ${store.noAccess.size} pages had no access and were skipped${depth > 0 ? ` (listed in ${NO_ACCESS_FILE})` : ''}\n`);
@@ -230,6 +242,7 @@ async function dumpCommand(input: string) {
     log(depth > 0 ? `Writing ${store.expanded.size} file${store.expanded.size > 1 ? 's' : ''} to ${resolve(opt.out!)}` : 'Rendering Markdown');
     if (depth > 0) {
       const paths = writeTree(store, pageId, opt.out!);
+      if (journal && !store.truncated) rmSync(journal, { force: true });
       const out = resolve(opt.out!);
       if (opt.json) {
         const pages = [...paths].map(([id, path]) => ({ id, title: pageTitle(store, id), path }));

@@ -5,6 +5,11 @@ export type RichText = Run[];
 export interface Block {
   id: string;
   type: string;
+  version?: number;
+  created_time?: number;
+  last_edited_time?: number;
+  created_by_id?: string;
+  last_edited_by_id?: string;
   alive?: boolean;
   space_id?: string;
   content?: string[];
@@ -17,6 +22,7 @@ export interface Block {
 }
 
 export interface Collection {
+  version?: number;
   name?: RichText;
   schema?: Record<string, { name: string; type: string }>;
 }
@@ -24,6 +30,8 @@ export interface Collection {
 export interface Store {
   blocks: Record<string, Block>;
   collections: Record<string, Collection>;
+  /** Records absorbed since the last journal line, only set while a crawl is being journaled. */
+  pending?: { blocks: Record<string, Block>; collections: Record<string, Collection> };
   /** Display names of mentioned people, by Notion user id. */
   users: Record<string, string>;
   expanded: Set<string>;
