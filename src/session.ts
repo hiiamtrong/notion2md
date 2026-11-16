@@ -1,0 +1,92 @@
+import { rmSync } from 'node:fs';
+import { chromium, type BrowserContext } from 'playwright-core';
+import { cloneProfile, type Profile } from './chrome.ts';
+import { CliError } from './errors.ts';
+import { apiError, createPacer } from './notion.ts';
+import type { Api, ApiResponse } from './types.ts';
+
+export interface SessionOptions {
+  root: string;
+  profile: Profile;
+  channel: string;
+  headed: boolean;
+  /** A Notion page to open first: the API is called from inside it, so it must be on a Notion host. */
+  url: string;
+  timeoutMs: number;
+  log: (msg: string) => void;
+  /** Return true when a first Ctrl-C was handled (a crawl keeps what it fetched). The second one always quits. */
+  onSigint?: () => boolean;
+}
+
+/** Runs `work` with a logged-in Notion API, and removes the cookie copy and the browser afterwards, signals included. */
+export async function withSession<T>(o: SessionOptions, work: (api: Api) => Promise<T>): Promise<T> {
+  const { profile, log } = o;
+  // The cookie copy exists before Chrome does, so it is removable from the first instant, Ctrl-C included.
+  const tmp = cloneProfile(o.root, profile.dir, ['notion.so', 'notion.com', 'notion.site']);
+  let ctx: BrowserContext | undefined;
+  const cleanup = async () => {
+    await ctx?.close().catch(() => {});
+    rmSync(tmp, { recursive: true, force: true });
+  };
+  let interrupts = 0;
+  process.on('SIGINT', () => {
+    if (interrupts++ === 0 && o.onSigint?.()) return;
+    cleanup().finally(() => process.exit(130));
+  });
+  for (const [signal, code] of [['SIGTERM', 143], ['SIGHUP', 129]] as const) {
+    process.on(signal, () => cleanup().finally(() => process.exit(code)));
+  }
+
+  try {
+    log(`Launching ${o.channel}${o.headed ? '' : ' (headless)'}`);
+    try {
+      ctx = await chromium.launchPersistentContext(tmp, {
+        channel: o.channel,
+        headless: !o.headed,
+        // Playwright's own handlers exit at once and would skip the cleanup of the cookie copy, so signals are handled above.
+        handleSIGINT: false,
+        handleSIGTERM: false,
+        handleSIGHUP: false,
+        timeout: Math.min(o.timeoutMs, 60_000),
+        ignoreDefaultArgs: ['--use-mock-keychain', '--enable-automation'],
+        args: [`--profile-directory=${profile.dir}`],
+      });
+    } catch (e) {
+      throw new CliError('BROWSER_FAILED', (e as Error).message.split('\n')[0]!, `Is "${o.channel}" installed? Try --channel msedge|chromium`, 5);
+    }
+
+    const page = ctx.pages()[0] ?? (await ctx.newPage());
+    log(`Opening ${o.url}`);
+    await page.goto(o.url, { waitUntil: 'domcontentloaded' });
+    if (/\/login|\/onboarding/.test(new URL(page.url()).pathname)) {
+      throw new CliError('AUTH_REQUIRED', `Profile "${profile.dir}" (${profile.name}) is not logged in to Notion`, 'Log in to Notion once in that Chrome profile, or pick another with --profile', 4);
+    }
+    // Fetched inside the page: same origin, real Chrome network stack, cookies of the profile.
+    const pacer = createPacer();
+    const api: Api = async (endpoint, body) => {
+      await pacer.wait();
+      const res = await page.evaluate(async ([ep, payload]: [string, unknown]): Promise<{ ok: true; json: ApiResponse; limited: number } | { ok: false; status: number; text: string; limited: number }> => {
+        // 429 is Notion's rate limit: wait as long as it asks (Retry-After), else back off 2s, 4s, 8s...
+        let limited = 0;
+        for (let attempt = 1; ; attempt++) {
+          const r = await fetch(`/api/v3/${ep}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+          if (r.ok) return { ok: true, json: await r.json(), limited };
+          if ((r.status !== 429 && r.status < 500) || attempt === 6) return { ok: false, status: r.status, text: (await r.text()).slice(0, 200), limited };
+          if (r.status === 429) limited++;
+          const asked = Number(r.headers.get('retry-after'));
+          await new Promise((done) => setTimeout(done, Math.min(asked > 0 ? asked : 2 ** attempt, 60) * 1000));
+        }
+      }, [endpoint, body] as [string, unknown]);
+      if (res.limited) {
+        pacer.slowDown();
+        log(`Rate limited by Notion, now ${pacer.delay} ms between requests`);
+      }
+      if (!res.limited) pacer.succeeded();
+      if (res.ok) return res.json;
+      throw apiError(endpoint, res.status, res.text);
+    };
+    return await work(api);
+  } finally {
+    await cleanup();
+  }
+}

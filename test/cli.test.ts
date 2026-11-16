@@ -26,6 +26,12 @@ test('bad usage exits 2 with a code on stderr and nothing on stdout', () => {
     [[ID, '--timeout', 'abc'], 'BAD_INPUT'],
     [[ID, '--timeout', '0'], 'BAD_INPUT'],
     [[`https://attacker.example/x-${ID}`], 'BAD_INPUT'],
+    [['find'], 'BAD_INPUT'],
+    [['find', ID], 'BAD_INPUT'],
+    [['find', ID, '--where', '6660'], 'BAD_INPUT'],
+    [['find', ID, '--where', 'Task ID=1', '--limit', '0'], 'BAD_INPUT'],
+    [['find', ID, 'extra', '--where', 'Task ID=1'], 'BAD_INPUT'],
+    [['find', 'hello', '--where', 'Task ID=1'], 'BAD_INPUT'],
     [[ID, '-d', '1', '-o', file], 'BAD_INPUT'],
     [[ID, '-d', '1', '-o', join(file, 'sub')], 'BAD_INPUT'],
   ];
@@ -54,7 +60,7 @@ test('a valid request with an unusable Chrome dir exits 3, which also proves val
 test('--help exits 0 and documents every exit code and the folder layout', () => {
   const r = run('--help');
   assert.equal(r.status, 0);
-  for (const word of ['EXIT CODES', 'FOLDER OUTPUT', '--progress', '--depth']) assert.ok(r.stdout.includes(word), word);
+  for (const word of ['EXIT CODES', 'FOLDER OUTPUT', '--progress', '--depth', 'find', '--where']) assert.ok(r.stdout.includes(word), word);
 });
 
 test.after(() => rmSync(scratch, { recursive: true, force: true }));

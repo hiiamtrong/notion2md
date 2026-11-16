@@ -60,6 +60,7 @@ A bare 32 character page id works in place of the URL.
 
 ```
 notion2md <url|page-id> [options]
+notion2md find <database-url|id> --where "Name=value" [--where ...] [--limit 20] [--json]
 notion2md profiles [--json]
 ```
 
@@ -78,11 +79,26 @@ notion2md profiles [--json]
 | `--channel <c>` | `chrome` (default), `msedge` or `chromium`. |
 | `--user-data-dir <d>` | Chrome user data directory to read profiles from, for non standard installs. |
 | `--headed` | Show the browser window, for debugging. |
+| `--where "Name=value"` | `find` only: match a database property by name, repeatable. Every one must match. |
+| `--limit <n>` | `find` only: how many rows to print (default `20`). |
 | `-h, --help`, `-v, --version` | |
 
 ### Choosing a profile
 
 `-p` accepts the directory name, the bare number, the display name or the account email, case insensitive. If a name or email belongs to several profiles the command fails with `PROFILE_AMBIGUOUS` and lists the directories, it never guesses. Pass the directory name in that case.
+
+## Finding rows
+
+`find` looks a row up by any property, without dumping the database:
+
+```bash
+notion2md find "$TASKS_DB" -p 70 --where "Task ID=6660"
+# https://www.notion.so/415926e209a381f39617f058706652b8    [Campaign] Generic bet / settle API (/campaign/bet, /campaign/settle)
+```
+
+It prints `<url>` and `<title>` per row, separated by a tab, so `notion2md $(... | cut -f1)` opens the row. `--where` can be repeated and every one must match. Text and title match part of the text, numbers (including auto-increment ids like a task id) need the same number, and select, multi_select and status need one of their options, ignoring case. Date, person, relation and checkbox properties are refused instead of quietly matching nothing. Notion does the filtering, so a database of any size answers in one request.
+
+The option list comes from the database schema: a misspelled property name or option fails with the valid ones in the error, rather than printing no rows. When more rows match than `--limit`, a warning on stderr says so, and `--json` reports `hasMore`.
 
 ## Crawling
 
@@ -166,6 +182,12 @@ Same fields, except `markdown` is replaced by `out` (absolute folder path), each
 | `skipped` | Pages found but not fetched because the crawl stopped early |
 | `error` | Message when `truncated` is `"error"`, else `null`. `ok` is `false` in that case, but the files are still written. |
 | `noAccess` | `[{ id, title, url, from }]`, `from` is the id of the page that linked to it |
+
+### `--json`, find
+
+```json
+{"ok":true,"id":"<database id>","title":"Tasks","url":"https://www.notion.so/<database id>","profile":"Profile 70","limit":20,"hasMore":false,"rows":[{"id":"4159…","title":"[Campaign] Generic bet / settle API","url":"https://www.notion.so/4159…"}]}
+```
 
 ### Errors
 

@@ -69,7 +69,7 @@ export interface ApiResponse {
   recordMap?: RecordMap;
   cursors?: Cursor[];
   cursor?: Cursor;
-  result?: { reducerResults?: { collection_group_results?: { blockIds?: string[] } } };
+  result?: { reducerResults?: { collection_group_results?: { blockIds?: string[]; hasMore?: boolean } } };
 }
 
 export type Api = (endpoint: string, body: unknown) => Promise<ApiResponse>;

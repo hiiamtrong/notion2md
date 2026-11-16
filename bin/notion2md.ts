@@ -2,19 +2,21 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { chromium, type BrowserContext } from 'playwright-core';
-import { cloneProfile, defaultChromeRoot, listProfiles, resolveProfile } from '../src/chrome.ts';
+import { defaultChromeRoot, listProfiles, resolveProfile } from '../src/chrome.ts';
 import { CliError } from '../src/errors.ts';
+import { findRows, parseLimit, parseWheres } from '../src/find.ts';
 import { JOURNAL_FILE } from '../src/journal.ts';
 import { pageTitle, pageUrl, toMarkdown } from '../src/markdown.ts';
-import { apiError, createPacer, loadTree, parseConcurrency, parseDepth, parseMaxPages, parsePageId, parseTimeout } from '../src/notion.ts';
+import { loadTree, parseConcurrency, parseDepth, parseMaxPages, parsePageId, parseTimeout } from '../src/notion.ts';
+import { withSession } from '../src/session.ts';
 import { NO_ACCESS_FILE, writeTree } from '../src/tree.ts';
-import type { Api, ApiResponse } from '../src/types.ts';
 
 const HELP = `notion2md: dump a Notion page to Markdown using a logged-in Chrome profile (headless Playwright)
 
 USAGE
   notion2md <url|page-id> [options]   Markdown to stdout
+  notion2md find <database-url> --where "Name=value" [--where ...] [--limit 20] [--json]
+                                      Rows of a database matching every --where, one per line
   notion2md profiles [--json]         List Chrome profiles you can pass to --profile
 
 OPTIONS
@@ -40,6 +42,13 @@ OPTIONS
                            On timeout a crawl stops and writes what it has
       --progress           Print progress to stderr (automatic when stderr is a terminal)
   -h, --help / -v, --version
+
+FIND
+  --where "Name=value" filters on a database property, repeatable: every one must match. A text property
+  matches part of the text, a number one needs the same number, and select, multi_select and status need
+  one of their options (ignoring case). Title, text, number, Task ID style numbers, select, multi_select and
+  status work; date, person and relation properties do not. It prints <url> and <title> per row, separated
+  by a tab, capped at --limit (default 20). A warning on stderr says when more rows matched than printed.
 
 BEHAVIOR
   stdout carries only the result. Errors go to stderr as "error[CODE]: message" plus a "hint:" line,
@@ -87,6 +96,8 @@ const { values: opt, positionals } = parseArgs({
     concurrency: { type: 'string' },
     resume: { type: 'boolean', default: false },
     'keep-journal': { type: 'boolean', default: false },
+    where: { type: 'string', multiple: true },
+    limit: { type: 'string' },
     progress: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
     version: { type: 'boolean', short: 'v' },
@@ -134,145 +145,106 @@ async function dumpCommand(input: string) {
   const root = opt['user-data-dir'] ?? defaultChromeRoot();
   const profile = resolveProfile(root, opt.profile);
   log(`Using ${profile.dir} (${profile.name}${profile.email ? `, ${profile.email}` : ''})`);
-  const tmp = cloneProfile(root, profile.dir, ['notion.so', 'notion.com', 'notion.site']);
-  let ctx: BrowserContext | undefined;
-  const cleanup = async () => {
-    await ctx?.close().catch(() => {});
-    rmSync(tmp, { recursive: true, force: true });
-  };
-  // With a crawl, the first Ctrl-C stops after the current page and keeps what was fetched, the second quits.
-  process.on('SIGINT', () => {
-    if (depth > 0 && !stop.signal.aborted) {
+  const store = await withSession({
+    root, profile, channel: opt.channel, headed: opt.headed, url, timeoutMs: timeout, log,
+    // With a crawl, the first Ctrl-C stops after the current page and keeps what was fetched, the second quits.
+    onSigint: () => {
+      if (depth === 0 || stop.signal.aborted) return false;
       interrupted = true;
       stop.abort();
       log('Stopping after the current page, press Ctrl-C again to quit now');
-    } else cleanup().finally(() => process.exit(130));
-  });
-  for (const [signal, code] of [['SIGTERM', 143], ['SIGHUP', 129]] as const) {
-    process.on(signal, () => cleanup().finally(() => process.exit(code)));
-  }
-
-  try {
-    let context: BrowserContext;
-    log(`Launching ${opt.channel}${opt.headed ? '' : ' (headless)'}`);
-    try {
-      // The mock keychain flag would make Chrome unable to decrypt the cloned cookies.
-      context = ctx = await chromium.launchPersistentContext(tmp, {
-        channel: opt.channel,
-        headless: !opt.headed,
-        // Playwright's own handlers exit at once and would skip the cleanup of the cookie copy, so signals are handled below.
-        handleSIGINT: false,
-        handleSIGTERM: false,
-        handleSIGHUP: false,
-        timeout: Math.min(timeout, 60_000),
-        ignoreDefaultArgs: ['--use-mock-keychain', '--enable-automation'],
-        args: [`--profile-directory=${profile.dir}`],
-      });
-    } catch (e) {
-      throw new CliError('BROWSER_FAILED', (e as Error).message.split('\n')[0], `Is "${opt.channel}" installed? Try --channel msedge|chromium`, 5);
-    }
-
-    const work = async () => {
-      const page = context.pages()[0] ?? (await context.newPage());
-      log(`Opening ${url}`);
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
-      if (/\/login|\/onboarding/.test(new URL(page.url()).pathname)) {
-        throw new CliError('AUTH_REQUIRED', `Profile "${profile.dir}" (${profile.name}) is not logged in to Notion`, 'Log in to Notion once in that Chrome profile, or pick another with --profile', 4);
-      }
-      // Fetched inside the page: same origin, real Chrome network stack, cookies of the profile.
-      const pacer = createPacer();
-      const api: Api = async (endpoint, body) => {
-        await pacer.wait();
-        const res = await page.evaluate(async ([ep, payload]: [string, unknown]): Promise<{ ok: true; json: ApiResponse; limited: number } | { ok: false; status: number; text: string; limited: number }> => {
-          // 429 is Notion's rate limit: wait as long as it asks (Retry-After), else back off 2s, 4s, 8s...
-          let limited = 0;
-          for (let attempt = 1; ; attempt++) {
-            const r = await fetch(`/api/v3/${ep}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
-            if (r.ok) return { ok: true, json: await r.json(), limited };
-            if ((r.status !== 429 && r.status < 500) || attempt === 6) return { ok: false, status: r.status, text: (await r.text()).slice(0, 200), limited };
-            if (r.status === 429) limited++;
-            const asked = Number(r.headers.get('retry-after'));
-            await new Promise((done) => setTimeout(done, Math.min(asked > 0 ? asked : 2 ** attempt, 60) * 1000));
-          }
-        }, [endpoint, body] as [string, unknown]);
-        if (res.limited) {
-          pacer.slowDown();
-          log(`Rate limited by Notion, now ${pacer.delay} ms between requests`);
-        }
-        if (!res.limited) pacer.succeeded();
-        if (res.ok) return res.json;
-        throw apiError(endpoint, res.status, res.text);
-      };
-      return loadTree(api, pageId, {
-        depth,
-        maxPages,
-        concurrency,
-        journal,
-        resume: opt.resume,
-        signal: stop.signal,
-        onPage: (id, store, level) => {
-          const n = store.expanded.size;
-          const kind = store.blocks[id]?.type === 'page' ? '' : ' (database)';
-          log(`Fetched ${n} page${n > 1 ? 's' : ''}: ${'  '.repeat(level)}${short(pageTitle(store, id) || 'Untitled')}${kind}`);
-        },
-      });
-    };
-
+      return true;
+    },
+  }, async (api) => {
     let hardTimer: NodeJS.Timeout;
     const hardLimit = new Promise<never>((_, reject) => {
       hardTimer = setTimeout(() => reject(new CliError('TIMEOUT', `Gave up after ${timeoutSec + GRACE_SEC}s`, depth > 0 ? 'Raise --timeout, or run again with --resume to continue where it stopped' : 'Raise --timeout', 1)), timeout + GRACE_SEC * 1000);
     });
     const softTimer = setTimeout(() => stop.abort(), timeout);
-    const store = await Promise.race([work(), hardLimit]).finally(() => {
+    return Promise.race([loadTree(api, pageId, {
+      depth,
+      maxPages,
+      concurrency,
+      journal,
+      resume: opt.resume,
+      signal: stop.signal,
+      onPage: (id, store, level) => {
+        const n = store.expanded.size;
+        const kind = store.blocks[id]?.type === 'page' ? '' : ' (database)';
+        log(`Fetched ${n} page${n > 1 ? 's' : ''}: ${'  '.repeat(level)}${short(pageTitle(store, id) || 'Untitled')}${kind}`);
+      },
+    }), hardLimit]).finally(() => {
       clearTimeout(softTimer);
       clearTimeout(hardTimer);
     });
-    const skipped = store.skipped.length;
-    const reason = store.truncated === 'aborted' ? (interrupted ? 'interrupted' : 'timeout') : (store.truncated ?? null);
-    const noAccess = [...store.noAccess].map(([id, from]) => ({ id, title: pageTitle(store, id) || null, url: pageUrl(id), from }));
-    if (store.truncated === 'max-pages') {
-      process.stderr.write(`warning: stopped at --max-pages ${maxPages}; ${skipped} more pages were found but not fetched (add --resume --max-pages <n|all> to continue)\n`);
-    } else if (store.truncated === 'aborted') {
-      process.stderr.write(`warning: ${interrupted ? 'stopped by Ctrl-C' : `--timeout ${timeoutSec}s reached`}; ${skipped} more pages were found but not fetched${depth > 0 ? ' (add --resume to continue)' : ''}\n`);
-    }
-    if (store.truncated === 'error') {
-      process.stderr.write(`warning: stopped after an error, ${skipped} pages not fetched: ${store.error}${depth > 0 ? ' (add --resume to continue)' : ''}\n`);
-      process.exitCode = 1;
-    }
-    if (store.noAccess.size) process.stderr.write(`warning: ${store.noAccess.size} pages had no access and were skipped${depth > 0 ? ` (listed in ${NO_ACCESS_FILE})` : ''}\n`);
-
-    const title = pageTitle(store, pageId);
-    log(depth > 0 ? `Writing ${store.expanded.size} file${store.expanded.size > 1 ? 's' : ''} to ${resolve(opt.out!)}` : 'Rendering Markdown');
-    if (depth > 0) {
-      const paths = writeTree(store, pageId, opt.out!);
-      if (journal && !store.truncated && !opt['keep-journal']) rmSync(journal, { force: true });
-      const out = resolve(opt.out!);
-      if (opt.json) {
-        const pages = [...paths].map(([id, path]) => ({ id, title: pageTitle(store, id), path }));
-        print(JSON.stringify({ ok: !store.error, id: pageId, title, url, profile: profile.dir, out, truncated: reason, skipped, error: store.error ?? null, noAccess, pages }));
-      } else print(out);
-      log('Done');
-      return;
-    }
-    const markdown = toMarkdown(store, pageId);
-    if (opt.json) {
-      print(JSON.stringify({ ok: true, id: pageId, title, url, profile: profile.dir, truncated: null, skipped: 0, noAccess: [], pages: [{ id: pageId, title }], markdown }));
-    } else if (opt.out) {
-      writeFileSync(opt.out, markdown);
-      print(resolve(opt.out));
-    } else {
-      print(markdown);
-    }
-    log('Done');
-  } finally {
-    await cleanup();
+  });
+  const skipped = store.skipped.length;
+  const reason = store.truncated === 'aborted' ? (interrupted ? 'interrupted' : 'timeout') : (store.truncated ?? null);
+  const noAccess = [...store.noAccess].map(([id, from]) => ({ id, title: pageTitle(store, id) || null, url: pageUrl(id), from }));
+  if (store.truncated === 'max-pages') {
+    process.stderr.write(`warning: stopped at --max-pages ${maxPages}; ${skipped} more pages were found but not fetched (add --resume --max-pages <n|all> to continue)\n`);
+  } else if (store.truncated === 'aborted') {
+    process.stderr.write(`warning: ${interrupted ? 'stopped by Ctrl-C' : `--timeout ${timeoutSec}s reached`}; ${skipped} more pages were found but not fetched${depth > 0 ? ' (add --resume to continue)' : ''}\n`);
   }
+  if (store.truncated === 'error') {
+    process.stderr.write(`warning: stopped after an error, ${skipped} pages not fetched: ${store.error}${depth > 0 ? ' (add --resume to continue)' : ''}\n`);
+    process.exitCode = 1;
+  }
+  if (store.noAccess.size) process.stderr.write(`warning: ${store.noAccess.size} pages had no access and were skipped${depth > 0 ? ` (listed in ${NO_ACCESS_FILE})` : ''}\n`);
+
+  const title = pageTitle(store, pageId);
+  log(depth > 0 ? `Writing ${store.expanded.size} file${store.expanded.size > 1 ? 's' : ''} to ${resolve(opt.out!)}` : 'Rendering Markdown');
+  if (depth > 0) {
+    const paths = writeTree(store, pageId, opt.out!);
+    if (journal && !store.truncated && !opt['keep-journal']) rmSync(journal, { force: true });
+    const out = resolve(opt.out!);
+    if (opt.json) {
+      const pages = [...paths].map(([id, path]) => ({ id, title: pageTitle(store, id), path }));
+      print(JSON.stringify({ ok: !store.error, id: pageId, title, url, profile: profile.dir, out, truncated: reason, skipped, error: store.error ?? null, noAccess, pages }));
+    } else print(out);
+    log('Done');
+    return;
+  }
+  const markdown = toMarkdown(store, pageId);
+  if (opt.json) {
+    print(JSON.stringify({ ok: true, id: pageId, title, url, profile: profile.dir, truncated: null, skipped: 0, noAccess: [], pages: [{ id: pageId, title }], markdown }));
+  } else if (opt.out) {
+    writeFileSync(opt.out, markdown);
+    print(resolve(opt.out));
+  } else {
+    print(markdown);
+  }
+  log('Done');
+}
+
+async function findCommand(input: string) {
+  const dbId = parsePageId(input);
+  const wheres = parseWheres(opt.where ?? []);
+  if (!wheres.length) throw new CliError('BAD_INPUT', 'A find needs a property to look for', 'Pass --where "Task ID=6660" (repeat it to match more than one)', 2);
+  const limit = parseLimit(opt.limit);
+  const timeoutSec = parseTimeout(opt.timeout, 0);
+  const url = /^https?:/.test(input.trim()) ? input.trim() : pageUrl(dbId);
+  const root = opt['user-data-dir'] ?? defaultChromeRoot();
+  const profile = resolveProfile(root, opt.profile);
+  log(`Using ${profile.dir} (${profile.name}${profile.email ? `, ${profile.email}` : ''})`);
+  const found = await withSession({ root, profile, channel: opt.channel, headed: opt.headed, url, timeoutMs: timeoutSec * 1000, log }, (api) => findRows(api, dbId, { wheres, limit }));
+  if (found.hasMore) process.stderr.write(`warning: more rows matched than printed; raise --limit above ${limit}\n`);
+  if (opt.json) {
+    print(JSON.stringify({ ok: true, id: dbId, title: found.database.title, url: found.database.url, profile: profile.dir, limit, hasMore: found.hasMore, rows: found.rows }));
+  } else if (!found.rows.length) {
+    process.stderr.write(`warning: no row of "${found.database.title || dbId}" matched\n`);
+  } else for (const row of found.rows) print(`${row.url}\t${row.title}`);
+  log('Done');
 }
 
 try {
   if (opt.help) print(HELP);
   else if (opt.version) print('0.1.0');
   else if (positionals[0] === 'profiles') await profilesCommand();
+  else if (positionals[0] === 'find') {
+    if (positionals.length > 2) throw new CliError('BAD_INPUT', 'find takes one database URL', 'See notion2md --help', 2);
+    await findCommand(positionals[1] ?? '');
+  }
   else if (positionals.length === 1) await dumpCommand(positionals[0]);
   else throw new CliError('BAD_INPUT', 'Expected exactly one page URL or id', 'See notion2md --help', 2);
 } catch (e) {
