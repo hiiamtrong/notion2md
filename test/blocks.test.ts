@@ -69,3 +69,24 @@ test('loadTree: a synced-block copy brings in the content of the block it points
   assert.match(md, /\[\[GENP-2365\] Refactor ingestion\]\(https:\/\/github\.com\/swaglive\/swag-server\/pull\/17800\)/);
   assert.deepEqual([...synced].sort(), ['orig', 'pr', 't1']);
 });
+
+test('loadTree: the author of a row can be a bot, which is looked up in the bot table and not in notion_user', async () => {
+  const tables: string[] = [];
+  const api: Api = async (endpoint, body: any) => {
+    if (endpoint === 'loadCachedPageChunkV2') {
+      const row = { id: ID, type: 'page', parent_table: 'collection', parent_id: 'c', created_by_id: 'u1', created_by_table: 'notion_user', last_edited_by_id: 'bot1', last_edited_by_table: 'bot' };
+      return { recordMap: recordMap(row), cursors: [{ stack: [] }] };
+    }
+    const asked = body.requests.map((r: any) => `${r.pointer.table}:${r.pointer.id}`);
+    tables.push(...asked);
+    return {
+      recordMap: {
+        notion_user: asked.includes('notion_user:u1') ? { u1: { value: { value: { id: 'u1', name: 'Lu John' } } } } : {},
+        bot: asked.includes('bot:bot1') ? { bot1: { value: { value: { id: 'bot1', name: 'Automation' } } } } : {},
+      },
+    };
+  };
+  const store = await loadTree(api, ID);
+  assert.deepEqual(tables.filter((t) => !t.startsWith('collection:')).sort(), ['bot:bot1', 'notion_user:u1']);
+  assert.deepEqual(store.users, { u1: 'Lu John', bot1: 'Automation' });
+});

@@ -9,7 +9,9 @@ export interface Block {
   created_time?: number;
   last_edited_time?: number;
   created_by_id?: string;
+  created_by_table?: string;
   last_edited_by_id?: string;
+  last_edited_by_table?: string;
   alive?: boolean;
   space_id?: string;
   content?: string[];
@@ -59,6 +61,8 @@ export interface RecordMap {
   block?: Record<string, Rec>;
   collection?: Record<string, Rec>;
   notion_user?: Record<string, Rec>;
+  /** Automations and integrations: they can be the author of a row, and have no notion_user record. */
+  bot?: Record<string, Rec>;
 }
 
 export interface ApiResponse {

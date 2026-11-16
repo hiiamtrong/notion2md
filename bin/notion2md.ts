@@ -25,6 +25,8 @@ OPTIONS
                            Depth above 0 writes a folder (needs --out <dir>), see FOLDER OUTPUT.
       --max-pages <n|all>  Stop after fetching n pages (default 1000). What was fetched is still written.
       --concurrency <n>    Pages fetched at the same time, 1 to 16 (default 1). Rate limits (429) slow every fetch down.
+      --keep-journal       Keep the journal after a crawl that finished, so a later --resume only renders again
+                           (for example after an update of this tool) without fetching pages. It can be hundreds of MB.
       --resume             Continue the crawl that was stopped or killed in --out: pages already fetched are read from
                            its journal (.notion2md-journal.jsonl) instead of fetched again. Needs --depth above 0.
   -o, --out <path>         Depth 0: write Markdown to this file and print its path instead of the Markdown.
@@ -84,6 +86,7 @@ const { values: opt, positionals } = parseArgs({
     'max-pages': { type: 'string' },
     concurrency: { type: 'string' },
     resume: { type: 'boolean', default: false },
+    'keep-journal': { type: 'boolean', default: false },
     progress: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
     version: { type: 'boolean', short: 'v' },
@@ -242,7 +245,7 @@ async function dumpCommand(input: string) {
     log(depth > 0 ? `Writing ${store.expanded.size} file${store.expanded.size > 1 ? 's' : ''} to ${resolve(opt.out!)}` : 'Rendering Markdown');
     if (depth > 0) {
       const paths = writeTree(store, pageId, opt.out!);
-      if (journal && !store.truncated) rmSync(journal, { force: true });
+      if (journal && !store.truncated && !opt['keep-journal']) rmSync(journal, { force: true });
       const out = resolve(opt.out!);
       if (opt.json) {
         const pages = [...paths].map(([id, path]) => ({ id, title: pageTitle(store, id), path }));

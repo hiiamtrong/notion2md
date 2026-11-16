@@ -112,7 +112,7 @@ function absorb(store: Store, recordMap: RecordMap = {}): void {
       if (store.pending) store.pending.collections[id] = c;
     }
   }
-  for (const [id, rec] of Object.entries(recordMap.notion_user ?? {})) {
+  for (const [id, rec] of Object.entries({ ...recordMap.notion_user, ...recordMap.bot })) {
     const name = unwrap(rec)?.name;
     if (name) store.users[id] = name;
   }
@@ -190,6 +190,7 @@ async function loadPage(api: Api, id: string, store: Store): Promise<void> {
 async function resolveMentions(api: Api, store: Store): Promise<void> {
   const ids = new Set<string>();
   const people = new Set<string>();
+  const bots = new Set<string>();
   for (const b of Object.values(store.blocks)) {
     for (const runs of Object.values(b.properties ?? {})) {
       for (const [, decos] of runs) {
@@ -199,11 +200,16 @@ async function resolveMentions(api: Api, store: Store): Promise<void> {
         }
       }
     }
-    if (b.parent_table === 'collection') for (const u of [b.created_by_id, b.last_edited_by_id]) if (u && !store.users[u]) people.add(u);
+    if (b.parent_table === 'collection') {
+      for (const [u, table] of [[b.created_by_id, b.created_by_table], [b.last_edited_by_id, b.last_edited_by_table]]) {
+        if (u && !store.users[u]) (table === 'bot' ? bots : people).add(u);
+      }
+    }
   }
   if (!store.spaceId) return;
   await sync(api, store, 'block', [...ids]);
   await sync(api, store, 'notion_user', [...people]);
+  await sync(api, store, 'bot', [...bots]);
   // A mentioned database has no title of its own, its name lives in the collection record.
   const collections = [...ids].map((id) => store.blocks[id]?.collection_id).filter((c): c is string => !!c && !store.collections[c]);
   await sync(api, store, 'collection', collections);

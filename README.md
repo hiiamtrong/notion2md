@@ -69,6 +69,7 @@ notion2md profiles [--json]
 | `-d, --depth <n\|all>` | How many hops to follow from the page (default `0`). See [Crawling](#crawling). A depth above 0 needs `--out <dir>`. |
 | `--max-pages <n\|all>` | Stop after fetching this many pages (default `1000`). |
 | `--concurrency <n>` | Pages fetched at the same time, 1 to 16 (default `1`). One process with 4 is about 3x faster. Several processes at once hit Notion's rate limit (429) sooner, which slows every fetch down. |
+| `--keep-journal` | Keep the journal after a crawl that finished, so a later `--resume` only renders again (for example after an update of the tool) without fetching pages. It can be hundreds of MB. |
 | `--resume` | Continue a crawl that was stopped or killed in `--out`, without fetching the pages it already has. Needs `--depth` above 0. |
 | `-o, --out <path>` | Depth 0: write the Markdown to this file and print its path. Depth above 0: the output folder. |
 | `--json` | Print a JSON result instead of Markdown. Failures are JSON too. |
