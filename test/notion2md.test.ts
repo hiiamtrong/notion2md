@@ -323,6 +323,27 @@ test('layout: a page that lists an ancestor as its child does not recurse foreve
   assert.equal(layout(store, 'root').size, 4);
 });
 
+test('writeTree: a downloaded asset becomes a relative link from every page that shows it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'notion2md-test-'));
+  try {
+    const store = newStore();
+    Object.assign(store.blocks, {
+      root: { id: 'root', type: 'page', properties: { title: [['Root']] }, content: ['kid', 'shot'] },
+      kid: { id: 'kid', type: 'page', properties: { title: [['Kid']] }, content: ['kidShot'] },
+      shot: { id: 'shot', type: 'image', properties: { source: [['attachment:u:image.png']] } },
+      kidShot: { id: 'kidShot', type: 'image', properties: { source: [['attachment:u:kid.png']] } },
+    });
+    store.children.set('root', ['kid']);
+    store.expanded.add('root');
+    store.expanded.add('kid');
+    writeTree(store, 'root', dir, { dir: join(dir, '_assets'), names: new Map([['shot', 'a1-image.png'], ['kidShot', 'a2-kid.png']]) });
+    assert.match(readFileSync(join(dir, 'Root.md'), 'utf8'), /!\[\]\(_assets\/a1-image\.png\)/);
+    assert.match(readFileSync(join(dir, 'Root/Kid.md'), 'utf8'), /!\[\]\(\.\.\/_assets\/a2-kid\.png\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('writeTree: one file per page, relative encoded links to fetched pages, notion URL for the rest', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'notion2md-test-'));
   try {

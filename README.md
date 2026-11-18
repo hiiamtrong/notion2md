@@ -52,6 +52,9 @@ notion2md "https://www.notion.so/team/My-Page-0123456789abcdef0123456789abcdef" 
 
 # 3. Export a page and everything reachable from it into a folder
 notion2md "$URL" -p "Profile 2" --depth all --out ./export
+
+# 4. Same, and keep the images and attached files next to the Markdown
+notion2md "$URL" -p "Profile 2" --depth all --out ./export --assets ./export/_assets
 ```
 
 A bare 32 character page id works in place of the URL.
@@ -73,8 +76,9 @@ notion2md profiles [--json]
 | `--keep-journal` | Keep the journal after a crawl that finished, so a later `--resume` only renders again (for example after an update of the tool) without fetching pages. It can be hundreds of MB. |
 | `--resume` | Continue a crawl that was stopped or killed in `--out`, without fetching the pages it already has. Needs `--depth` above 0. |
 | `-o, --out <path>` | Depth 0: write the Markdown to this file and print its path. Depth above 0: the output folder. |
+| `--assets <dir>` | Download the images, attached files and page covers into this folder and link them locally. See [Attachments](#attachments). |
 | `--json` | Print a JSON result instead of Markdown. Failures are JSON too. |
-| `--timeout <sec>` | Overall time limit. Default `90`, or `1800` when depth is above 0. |
+| `--timeout <sec>` | Time limit for fetching pages. Default `90`, or `1800` when depth is above 0. Downloading attachments runs after that clock and is not counted. |
 | `--progress` | Print progress to stderr. On by default when stderr is a terminal. |
 | `--channel <c>` | `chrome` (default), `msedge` or `chromium`. |
 | `--user-data-dir <d>` | Chrome user data directory to read profiles from, for non standard installs. |
@@ -137,6 +141,25 @@ export/
 - File names come from page titles, sanitised so a title can never escape the output folder. Duplicate names in one folder get the first 8 characters of the page id appended.
 - Existing files with the same names are overwritten.
 
+## Attachments
+
+Notion keeps an uploaded file behind `attachment:<uuid>:<name>`, a scheme only the Notion app resolves, and it serves images through `notion.so/image/...`, which refuses a request without the session. A Markdown file that keeps those links works while the session lives and nothing else opens them.
+
+`--assets <dir>` fetches the bytes during the same browser session and replaces the link with a path relative to the Markdown file:
+
+```bash
+notion2md "$URL" -p 70 -o "My Page.md" --assets ./attachments
+notion2md "$URL" -p 70 --depth all --out ./export --assets ./export/_assets
+```
+
+- What is downloaded: `image`, `file`, `pdf`, `audio` and `video` blocks whose payload lives in Notion's storage, plus the cover of every page in the export. A video or embed block that holds an outside URL (YouTube, Figma) is a link and stays one.
+- Names are `<last 12 hex of the block id>-<stored name>`, sanitised and capped in bytes so a long CJK name still fits the filesystem. Blocks created together share their id prefix, so the tail is what keeps two `image.png` apart.
+- Every bit of Markdown for a page is written with a relative link, so a folder can be moved or zipped.
+- The `--timeout` budget covers fetching pages only. Attachments are downloaded after it, so a page with a large video runs longer than `--timeout`.
+- Re-rendering a crawl with `--resume --keep-journal` fetches no pages, but it does download every asset again: the local names have to match the new Markdown.
+- A file that cannot be fetched (another workspace, deleted, no permission) is skipped, the Markdown keeps no link for it, and the run ends with a warning and exit 1. The rest of the export is still written.
+- The cover of a page is exported as an image line at the top of its Markdown.
+
 ### Cost and limits
 
 Pages are fetched one at a time, roughly half a second each, and slower once Notion starts rate limiting. A real workspace of 649 pages took about 21 minutes. Parallel fetching would only trigger more 429 responses.
@@ -150,6 +173,7 @@ Pages are fetched one at a time, roughly half a second each, and slower once Not
 | Page Notion refuses | Skipped and listed in `_no-access.md`, crawl continues | 0 |
 | Rate limited (429) | Retried with waits, then the pace slows to up to 3 s per request and recovers after 20 clean calls | 0 |
 | Retries exhausted or another API error | Writes what was fetched, prints the error | 1 |
+| An attachment could not be downloaded | Skipped without a link, warns, the Markdown is still written | 1 |
 
 ## Output for agents
 
@@ -182,6 +206,7 @@ Same fields, except `markdown` is replaced by `out` (absolute folder path), each
 | `skipped` | Pages found but not fetched because the crawl stopped early |
 | `error` | Message when `truncated` is `"error"`, else `null`. `ok` is `false` in that case, but the files are still written. |
 | `noAccess` | `[{ id, title, url, from }]`, `from` is the id of the page that linked to it |
+| `assets` | `null` without `--assets`, else `{ dir, saved, failed }`. A `failed` above 0 also sets `ok` to `false` and the run exits 1. |
 
 ### `--json`, find
 
@@ -223,7 +248,7 @@ Everything that can be checked up front (depth, timeout, URL host, output folder
 - Only the first view of a database is read, without filters, so all rows come back. A database with two views produces two index files listing the same rows. A database is cut at 5000 rows.
 - Row fields are exported as text. People appear as `@Name` (a user group as `@group`, its name cannot be read), relations as links, and `Created time`, `Last edited time`, `Created by` and `Last edited by` are written from the row itself. Formula columns are not exported: Notion computes them in the browser and stores no value.
 - Link previews of other services (a GitHub pull request) become `[title](url)`. Columns are flattened into the page, so their side by side layout is lost.
-- Images hosted by Notion link to `notion.so/image/...`, which only opens with a logged in session. They are not downloaded.
+- Images and attached files are only usable offline with `--assets`. Without it an image links to `notion.so/image/...` (needs the session) and a file keeps its `attachment:` source, which nothing outside Notion opens.
 - Crawling a large workspace takes minutes, see [Cost and limits](#cost-and-limits).
 - Linux and Windows are untested.
 

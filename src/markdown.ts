@@ -10,6 +10,9 @@ type Href = (pageId: string) => string;
 
 const collectionName = (id: string | undefined, store: Doc) => inlineText(id ? store.collections[id]?.name : undefined, store);
 
+/** Block id to its downloaded file, or undefined to fall back to the Notion URL because signed links expire. */
+export type AssetHref = (blockId: string) => string | undefined;
+
 const WEB = /^https?:\/\//;
 
 /** A link preview of something in another service (a GitHub pull request): its title and address sit in `format`, not in `properties`. */
@@ -76,7 +79,7 @@ function inlineText(runs: RichText | undefined, store: Doc, href: Href = pageUrl
 
 const HEADINGS = { header: '##', sub_header: '###', sub_sub_header: '####', header_4: '#####' };
 
-export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl): string {
+export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl, assetHref?: AssetHref): string {
   const { blocks } = store;
   const text = (b: Block, key = 'title') => inlineText(b.properties?.[key], store, hrefOf);
   const plain = (b: Block, key: string) => (b.properties?.[key] ?? []).map((r) => r[0]).join('');
@@ -163,11 +166,11 @@ export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl): 
         return para(`${pad}$$${plain(b, 'title')}$$`);
       case 'image': {
         const src = plain(b, 'source');
-        const url = NOTION_HOSTED.test(src) ? `${NOTION}image/${encodeURIComponent(src)}?table=block&id=${b.id}&cache=v2` : src;
-        return src ? para(`${pad}![${text(b, 'caption')}](${url})`) : [];
+        const url = assetHref?.(b.id) ?? (NOTION_HOSTED.test(src) ? `${NOTION}image/${encodeURIComponent(src)}?table=block&id=${b.id}&cache=v2` : src);
+        return src && url ? para(`${pad}![${text(b, 'caption')}](${url})`) : [];
       }
       case 'bookmark': case 'video': case 'embed': case 'file': case 'pdf': case 'audio': {
-        const url = plain(b, 'source') || plain(b, 'link');
+        const url = assetHref?.(b.id) ?? (plain(b, 'source') || plain(b, 'link'));
         return url ? para(`${pad}[${plain(b, 'title') || text(b, 'caption') || url}](${url})`) : [];
       }
       case 'table': {
@@ -204,6 +207,8 @@ export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl): 
 
   const lines = block(blocks[rootId]!, 0, 0);
   const out: string[] = [];
+  const cover = assetHref?.(rootId);
+  if (cover) out.push(`![](${cover})`, '');
   for (const l of lines) if (l.trim() || (out.length && out.at(-1)!.trim())) out.push(l.trimEnd());
   return `${out.join('\n').trim()}\n`;
 }

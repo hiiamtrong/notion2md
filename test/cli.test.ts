@@ -34,6 +34,7 @@ test('bad usage exits 2 with a code on stderr and nothing on stdout', () => {
     [['find', 'hello', '--where', 'Task ID=1'], 'BAD_INPUT'],
     [[ID, '-d', '1', '-o', file], 'BAD_INPUT'],
     [[ID, '-d', '1', '-o', join(file, 'sub')], 'BAD_INPUT'],
+    [[ID, '--assets', file], 'BAD_INPUT'],
   ];
   for (const [args, code] of cases) {
     const r = run(...args);

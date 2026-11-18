@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
+import { assetLink } from './assets.ts';
 import { pageTitle, pageUrl, toMarkdown } from './markdown.ts';
 import type { Store } from './types.ts';
 
@@ -42,7 +43,7 @@ export function layout(store: Store, rootId: string): Map<string, string> {
   return paths;
 }
 
-export function writeTree(store: Store, rootId: string, outDir: string): Map<string, string> {
+export function writeTree(store: Store, rootId: string, outDir: string, assets?: { dir: string; names: Map<string, string> }): Map<string, string> {
   const paths = layout(store, rootId);
   for (const [id, path] of paths) {
     const from = posix.dirname(path);
@@ -50,9 +51,13 @@ export function writeTree(store: Store, rootId: string, outDir: string): Map<str
       const to = paths.get(target);
       return to ? posix.relative(from, to).split('/').map(encodeURIComponent).join('/') : pageUrl(target);
     };
+    const assetHref = assets && ((blockId: string) => {
+      const name = assets.names.get(blockId);
+      return name ? assetLink(join(outDir, ...from.split('/')), assets.dir, name) : undefined;
+    });
     const file = join(outDir, ...path.split('/'));
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, toMarkdown(store, id, href));
+    writeFileSync(file, toMarkdown(store, id, href, assetHref));
   }
   if (store.noAccess.size) writeFileSync(join(outDir, NO_ACCESS_FILE), noAccessReport(store, paths));
   return paths;

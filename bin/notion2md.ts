@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import { parseArgs } from 'node:util';
+import { assetLink, collectAssets, encodePath, saveAssets, signedUrls } from '../src/assets.ts';
 import { defaultChromeRoot, listProfiles, resolveProfile } from '../src/chrome.ts';
 import { CliError } from '../src/errors.ts';
 import { findRows, parseLimit, parseWheres } from '../src/find.ts';
@@ -33,12 +34,16 @@ OPTIONS
                            its journal (.notion2md-journal.jsonl) instead of fetched again. Needs --depth above 0.
   -o, --out <path>         Depth 0: write Markdown to this file and print its path instead of the Markdown.
                            Depth above 0: the output folder.
+      --assets <dir>       Download images, attached files and page covers into this dir and link them locally.
+                           Without it, an image points at notion.so/image (needs a signed in session) and an
+                           attached file keeps its attachment: source, which nothing outside Notion opens.
       --json               Machine output: {ok,id,title,url,profile,truncated,skipped,noAccess,pages,markdown|out}
                            (errors: {ok:false,error:{code,message,hint}})
       --user-data-dir <d>  Chrome user data dir to read profiles from (default: platform Chrome dir)
       --channel <c>        Browser channel: chrome (default), msedge, chromium
       --headed             Show the browser (for debugging)
-      --timeout <sec>      Overall time limit (default 90, or 1800 when --depth is above 0).
+      --timeout <sec>      Time limit for fetching pages (default 90, or 1800 when --depth is above 0).
+                           Attachments downloaded with --assets run after that clock.
                            On timeout a crawl stops and writes what it has
       --progress           Print progress to stderr (automatic when stderr is a terminal)
   -h, --help / -v, --version
@@ -95,6 +100,7 @@ const { values: opt, positionals } = parseArgs({
     'max-pages': { type: 'string' },
     concurrency: { type: 'string' },
     resume: { type: 'boolean', default: false },
+    assets: { type: 'string' },
     'keep-journal': { type: 'boolean', default: false },
     where: { type: 'string', multiple: true },
     limit: { type: 'string' },
@@ -141,11 +147,19 @@ async function dumpCommand(input: string) {
     }
   }
   const url = /^https?:/.test(input.trim()) ? input.trim() : `https://www.notion.so/${pageId.replaceAll('-', '')}`;
+  const assetsDir = opt.assets ? resolve(opt.assets) : undefined;
+  if (assetsDir) {
+    try {
+      mkdirSync(assetsDir, { recursive: true });
+    } catch (e) {
+      throw new CliError('BAD_INPUT', `Cannot use --assets "${opt.assets}": ${(e as NodeJS.ErrnoException).code}`, 'Pass a folder path that can be created', 2);
+    }
+  }
 
   const root = opt['user-data-dir'] ?? defaultChromeRoot();
   const profile = resolveProfile(root, opt.profile);
   log(`Using ${profile.dir} (${profile.name}${profile.email ? `, ${profile.email}` : ''})`);
-  const store = await withSession({
+  const { store, assets } = await withSession({
     root, profile, channel: opt.channel, headed: opt.headed, url, timeoutMs: timeout, log,
     // With a crawl, the first Ctrl-C stops after the current page and keeps what was fetched, the second quits.
     onSigint: () => {
@@ -155,13 +169,13 @@ async function dumpCommand(input: string) {
       log('Stopping after the current page, press Ctrl-C again to quit now');
       return true;
     },
-  }, async (api) => {
+  }, async (api, download) => {
     let hardTimer: NodeJS.Timeout;
     const hardLimit = new Promise<never>((_, reject) => {
       hardTimer = setTimeout(() => reject(new CliError('TIMEOUT', `Gave up after ${timeoutSec + GRACE_SEC}s`, depth > 0 ? 'Raise --timeout, or run again with --resume to continue where it stopped' : 'Raise --timeout', 1)), timeout + GRACE_SEC * 1000);
     });
     const softTimer = setTimeout(() => stop.abort(), timeout);
-    return Promise.race([loadTree(api, pageId, {
+    const store = await Promise.race([loadTree(api, pageId, {
       depth,
       maxPages,
       concurrency,
@@ -177,6 +191,10 @@ async function dumpCommand(input: string) {
       clearTimeout(softTimer);
       clearTimeout(hardTimer);
     });
+    if (!assetsDir) return { store, assets: undefined };
+    const all = collectAssets(store);
+    log(`Downloading ${all.length} attachment${all.length === 1 ? '' : 's'} to ${assetsDir}`);
+    return { store, assets: await saveAssets(all, await signedUrls(api, all, log), assetsDir, download, log) };
   });
   const skipped = store.skipped.length;
   const reason = store.truncated === 'aborted' ? (interrupted ? 'interrupted' : 'timeout') : (store.truncated ?? null);
@@ -191,23 +209,36 @@ async function dumpCommand(input: string) {
     process.exitCode = 1;
   }
   if (store.noAccess.size) process.stderr.write(`warning: ${store.noAccess.size} pages had no access and were skipped${depth > 0 ? ` (listed in ${NO_ACCESS_FILE})` : ''}\n`);
+  if (assets?.failed) {
+    process.stderr.write(`warning: ${assets.failed} attachment${assets.failed === 1 ? '' : 's'} could not be downloaded\n`);
+    process.exitCode = 1;
+  }
+  const assetsJson = assets && assetsDir ? { dir: assetsDir, saved: assets.names.size, failed: assets.failed } : null;
 
   const title = pageTitle(store, pageId);
   log(depth > 0 ? `Writing ${store.expanded.size} file${store.expanded.size > 1 ? 's' : ''} to ${resolve(opt.out!)}` : 'Rendering Markdown');
   if (depth > 0) {
-    const paths = writeTree(store, pageId, opt.out!);
+    const paths = writeTree(store, pageId, opt.out!, assets && assetsDir ? { dir: assetsDir, names: assets.names } : undefined);
     if (journal && !store.truncated && !opt['keep-journal']) rmSync(journal, { force: true });
     const out = resolve(opt.out!);
     if (opt.json) {
       const pages = [...paths].map(([id, path]) => ({ id, title: pageTitle(store, id), path }));
-      print(JSON.stringify({ ok: !store.error, id: pageId, title, url, profile: profile.dir, out, truncated: reason, skipped, error: store.error ?? null, noAccess, pages }));
+      print(JSON.stringify({ ok: !store.error && !assets?.failed, id: pageId, title, url, profile: profile.dir, out, truncated: reason, skipped, error: store.error ?? null, noAccess, assets: assetsJson, pages }));
     } else print(out);
     log('Done');
     return;
   }
-  const markdown = toMarkdown(store, pageId);
+  const assetHref = assets && assetsDir
+    ? (blockId: string) => {
+        const name = assets.names.get(blockId);
+        if (!name) return undefined;
+        // Relative to the Markdown file when one is written, absolute otherwise: stdout has no folder of its own.
+        return opt.out ? assetLink(dirname(resolve(opt.out)), assetsDir, name) : encodePath(join(assetsDir, name));
+      }
+    : undefined;
+  const markdown = toMarkdown(store, pageId, pageUrl, assetHref);
   if (opt.json) {
-    print(JSON.stringify({ ok: true, id: pageId, title, url, profile: profile.dir, truncated: null, skipped: 0, noAccess: [], pages: [{ id: pageId, title }], markdown }));
+    print(JSON.stringify({ ok: !assets?.failed, id: pageId, title, url, profile: profile.dir, truncated: null, skipped: 0, noAccess: [], assets: assetsJson, pages: [{ id: pageId, title }], markdown }));
   } else if (opt.out) {
     writeFileSync(opt.out, markdown);
     print(resolve(opt.out));

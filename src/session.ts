@@ -18,8 +18,21 @@ export interface SessionOptions {
   onSigint?: () => boolean;
 }
 
+/** A GET with the profile's cookies: signed Notion file URLs answer 403 without them. */
+export type Download = (url: string) => Promise<Response>;
+
+const NOTION_FILE_HOST = /^https:\/\/([\w-]+\.)*(notion\.com|notion\.so|notionusercontent\.com)\//;
+const S3_HOST = /^https:\/\/[\w.-]+\.amazonaws\.com\//;
+
+/** Which cookie policy a signed file URL gets: a Notion host needs the profile's cookies, S3 carries its own signature. */
+export function fileHost(url: string): 'notion' | 's3' | undefined {
+  if (NOTION_FILE_HOST.test(url)) return 'notion';
+  if (S3_HOST.test(url)) return 's3';
+  return undefined;
+}
+
 /** Runs `work` with a logged-in Notion API, and removes the cookie copy and the browser afterwards, signals included. */
-export async function withSession<T>(o: SessionOptions, work: (api: Api) => Promise<T>): Promise<T> {
+export async function withSession<T>(o: SessionOptions, work: (api: Api, download: Download) => Promise<T>): Promise<T> {
   const { profile, log } = o;
   // The cookie copy exists before Chrome does, so it is removable from the first instant, Ctrl-C included.
   const tmp = cloneProfile(o.root, profile.dir, ['notion.so', 'notion.com', 'notion.site']);
@@ -85,7 +98,14 @@ export async function withSession<T>(o: SessionOptions, work: (api: Api) => Prom
       if (res.ok) return res.json;
       throw apiError(endpoint, res.status, res.text);
     };
-    return await work(api);
+    return await work(api, async (url) => {
+      const host = fileHost(url);
+      if (!host) {
+        throw new CliError('BAD_INPUT', `Refusing to download from ${url.slice(0, 80)}`, 'Only Notion file hosts are fetched', 2);
+      }
+      const cookies = host === 'notion' ? (await ctx!.cookies(url)).map((c) => `${c.name}=${c.value}`).join('; ') : '';
+      return fetch(url, cookies ? { headers: { Cookie: cookies } } : undefined);
+    });
   } finally {
     await cleanup();
   }
