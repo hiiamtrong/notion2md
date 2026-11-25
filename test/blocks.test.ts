@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { toMarkdown } from '../src/markdown.ts';
 import { loadTree } from '../src/notion.ts';
-import type { Api, Block } from '../src/types.ts';
+import type { Api, ApiResponse, Block } from '../src/types.ts';
 
 const ID = '01234567-89ab-cdef-0123-456789abcdef';
 const rec = (b: Record<string, any>) => ({ spaceId: 'sp', value: { value: { alive: true, space_id: 'sp', ...b }, role: 'editor' } });
@@ -72,7 +72,7 @@ test('loadTree: a synced-block copy brings in the content of the block it points
 
 test('loadTree: the author of a row can be a bot, which is looked up in the bot table and not in notion_user', async () => {
   const tables: string[] = [];
-  const api: Api = async (endpoint, body: any) => {
+  const api: Api = async (endpoint, body: any): Promise<ApiResponse> => {
     if (endpoint === 'loadCachedPageChunkV2') {
       const row = { id: ID, type: 'page', parent_table: 'collection', parent_id: 'c', created_by_id: 'u1', created_by_table: 'notion_user', last_edited_by_id: 'bot1', last_edited_by_table: 'bot' };
       return { recordMap: recordMap(row), cursors: [{ stack: [] }] };

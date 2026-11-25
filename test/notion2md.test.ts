@@ -7,7 +7,7 @@ import { toMarkdown } from '../src/markdown.ts';
 import { apiError, createPacer, linkedPageId, loadTree, newStore, parseDepth, parseMaxPages, parsePageId, parseTimeout } from '../src/notion.ts';
 import { layout, slug, writeTree } from '../src/tree.ts';
 import { CliError } from '../src/errors.ts';
-import type { Api, Block } from '../src/types.ts';
+import type { Api, Block, Run } from '../src/types.ts';
 
 const ID = '01234567-89ab-cdef-0123-456789abcdef';
 const rec = (b: Record<string, any>) => ({ spaceId: 'sp', value: { value: { alive: true, ...b }, role: 'editor' } });
@@ -173,7 +173,7 @@ test('markdown: empty runs, undecorated runs and unknown mentions do not break i
 });
 
 test('markdown: a link mention renders as a link with its title, falling back to the URL', () => {
-  const lm = (arg: Record<string, string>) => ['‣', [['lm', arg]]];
+  const lm = (arg: Record<string, string>): Run => ['‣', [['lm', arg]]];
   const md = doc({
     id: 't',
     type: 'text',
@@ -186,7 +186,7 @@ test('markdown: a link mention renders as a link with its title, falling back to
 test('markdown: a user mention shows the name when known, else @user; a group mention shows @group', () => {
   const blocks: Record<string, Block> = {
     r: { id: 'r', type: 'page', properties: { title: [['T']] }, content: ['t'] },
-    t: { id: 't', type: 'text', properties: { title: [['‣', [['u', 'u1']]], [' '], ['‣', [['u', 'u2']]], [' '], ['‣', [['g', 'g1', 'sp']]]] } },
+    t: { id: 't', type: 'text', properties: { title: [['‣', [['u', 'u1']]], [' '], ['‣', [['u', 'u2']]], [' '], ['‣', [['g', 'g1']]]] } },
   };
   assert.equal(toMarkdown({ blocks, collections: {}, users: { u1: 'Lu John' } }, 'r'), '# T\n\n@Lu John @user @group\n');
 });
@@ -415,7 +415,7 @@ test('loadTree: reports each fetched page once, with its nesting level', async (
 });
 
 test('slug: cutting at the cap never leaves a trailing dot or space', () => {
-  for (const title of ['a'.repeat(79) + '.b', 'a'.repeat(79) + ' b', 'a'.repeat(78) + '. b']) assert.doesNotMatch(slug(title), /[. ]$/, title);
+  for (const title of [`${'a'.repeat(79)}.b`, `${'a'.repeat(79)} b`, `${'a'.repeat(78)}. b`]) assert.doesNotMatch(slug(title), /[. ]$/, title);
 });
 
 // --- following links and databases ---
