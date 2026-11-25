@@ -59,25 +59,32 @@ export function resolveProfile(root: string, wanted?: string): Profile {
   return named[0];
 }
 
+export interface Clone {
+  tmp: string;
+  /** Most Notion cookies either cookie layout holds. The copy Chrome reads may hold fewer, so withSession checks there. */
+  cookies: number;
+}
+
 // Chrome refuses automation on its default data dir (v136+) and locks a profile that is open,
 // so work on a throwaway copy holding only the cookies of `hosts`. Google cookies and the signed-in
 // Preferences must stay out: a clone that sees the browser account without its refresh token can
 // sign the real profile out of Google server-side.
-export function cloneProfile(root: string, dir: string, hosts: string[]): string {
+export function cloneProfile(root: string, dir: string, hosts: string[]): Clone {
   const tmp = mkdtempSync(join(tmpdir(), 'notion2md-'));
   cpSync(join(root, 'Local State'), join(tmp, 'Local State'));
-  for (const f of ['Network/Cookies', 'Cookies']) {
+  let cookies = 0;
+  for (const f of ['Cookies', 'Network/Cookies']) {
     const src = join(root, dir, f);
     if (!existsSync(src)) continue;
     const dst = join(tmp, dir, f);
     mkdirSync(dirname(dst), { recursive: true });
     cpSync(src, dst);
-    keepCookies(dst, hosts);
+    cookies = Math.max(cookies, keepCookies(dst, hosts));
   }
-  return tmp;
+  return { tmp, cookies };
 }
 
-function keepCookies(file: string, hosts: string[]): void {
+function keepCookies(file: string, hosts: string[]): number {
   const db = new DatabaseSync(file);
   try {
     const del = db.prepare('DELETE FROM cookies WHERE host_key = ?');
@@ -85,6 +92,7 @@ function keepCookies(file: string, hosts: string[]): void {
       const h = host_key.replace(/^\./, '');
       if (!hosts.some((k) => h === k || h.endsWith(`.${k}`))) del.run(host_key);
     }
+    return (db.prepare('SELECT count(*) AS n FROM cookies').get() as { n: number }).n;
   } finally {
     db.close();
   }

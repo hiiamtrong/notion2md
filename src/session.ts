@@ -31,11 +31,31 @@ export function fileHost(url: string): 'notion' | 's3' | undefined {
   return undefined;
 }
 
+/**
+ * A copy of a profile can lose its cookies: Chrome decrypts them per profile and drops the ones it cannot
+ * read, which looks exactly like a logged out profile. Say which of the two it is.
+ */
+export function checkLogin(profile: Profile, kept: number, live: number): void {
+  if (live > 0) return;
+  if (kept > 0) {
+    throw new CliError(
+      'COOKIES_UNREADABLE',
+      `The copy of profile "${profile.dir}" holds none of the ${kept} Notion cookies on disk`,
+      'Log in to Notion again in that Chrome profile, then run again: the cookies are expired, or this Chrome will not decrypt them outside their own profile',
+      4,
+    );
+  }
+  throw notLoggedIn(profile, 'holds no Notion cookies');
+}
+
+const notLoggedIn = (profile: Profile, why: string) =>
+  new CliError('AUTH_REQUIRED', `Profile "${profile.dir}" (${profile.name}) ${why}`, 'Log in to Notion once in that Chrome profile, or pick another with --profile', 4);
+
 /** Runs `work` with a logged-in Notion API, and removes the cookie copy and the browser afterwards, signals included. */
 export async function withSession<T>(o: SessionOptions, work: (api: Api, download: Download) => Promise<T>): Promise<T> {
   const { profile, log } = o;
   // The cookie copy exists before Chrome does, so it is removable from the first instant, Ctrl-C included.
-  const tmp = cloneProfile(o.root, profile.dir, ['notion.so', 'notion.com', 'notion.site']);
+  const { tmp, cookies: kept } = cloneProfile(o.root, profile.dir, ['notion.so', 'notion.com', 'notion.site']);
   let ctx: BrowserContext | undefined;
   const cleanup = async () => {
     await ctx?.close().catch(() => {});
@@ -69,10 +89,11 @@ export async function withSession<T>(o: SessionOptions, work: (api: Api, downloa
     }
 
     const page = ctx.pages()[0] ?? (await ctx.newPage());
+    checkLogin(profile, kept, (await ctx.cookies()).length);
     log(`Opening ${o.url}`);
     await page.goto(o.url, { waitUntil: 'domcontentloaded' });
     if (/\/login|\/onboarding/.test(new URL(page.url()).pathname)) {
-      throw new CliError('AUTH_REQUIRED', `Profile "${profile.dir}" (${profile.name}) is not logged in to Notion`, 'Log in to Notion once in that Chrome profile, or pick another with --profile', 4);
+      throw notLoggedIn(profile, 'is not logged in to Notion');
     }
     // Fetched inside the page: same origin, real Chrome network stack, cookies of the profile.
     const pacer = createPacer();

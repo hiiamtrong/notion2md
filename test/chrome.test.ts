@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { chromium, type BrowserContext } from 'playwright-core';
 import { cloneProfile, listProfiles, resolveProfile } from '../src/chrome.ts';
 
 function chromeDir(info_cache: Record<string, { name?: string; user_name?: string }>, last_used?: string) {
@@ -82,12 +83,13 @@ test('cloneProfile: keeps only Local State and the cookies of the given hosts, n
   db.close();
   writeFileSync(join(root, 'Default/Preferences'), '{}');
   writeFileSync(join(root, 'Default/Cache/big'), 'x');
-  const tmp = cloneProfile(root, 'Default', ['notion.so']);
+  const { tmp, cookies } = cloneProfile(root, 'Default', ['notion.so']);
   try {
     assert.deepEqual(
       ['Local State', 'Default/Network/Cookies', 'Default/Preferences', 'Default/Cache/big'].filter((f) => existsAt(tmp, f)),
       ['Local State', 'Default/Network/Cookies'],
     );
+    assert.equal(cookies, 2);
     const kept = new DatabaseSync(join(tmp, 'Default/Network/Cookies'));
     assert.deepEqual(
       (kept.prepare('SELECT host_key FROM cookies ORDER BY host_key').all() as { host_key: string }[]).map((r) => r.host_key),
@@ -107,8 +109,9 @@ test('cloneProfile: older Chrome keeps cookies at the profile root, and they are
   db.exec('CREATE TABLE cookies (host_key TEXT, name TEXT)');
   for (const h of ['.notion.so', '.google.com']) db.prepare('INSERT INTO cookies VALUES (?, ?)').run(h, 'c');
   db.close();
-  const tmp = cloneProfile(root, 'Default', ['notion.so']);
+  const { tmp, cookies } = cloneProfile(root, 'Default', ['notion.so']);
   try {
+    assert.equal(cookies, 1);
     const kept = new DatabaseSync(join(tmp, 'Default/Cookies'));
     assert.deepEqual((kept.prepare('SELECT host_key FROM cookies').all() as { host_key: string }[]).map((r) => r.host_key), ['.notion.so']);
     kept.close();
@@ -118,4 +121,53 @@ test('cloneProfile: older Chrome keeps cookies at the profile root, and they are
   }
 });
 
+test('cloneProfile: with both cookie layouts, the larger count wins, so a login in either is not missed', () => {
+  const root = chromeDir(PROFILES);
+  mkdirSync(join(root, 'Default/Network'), { recursive: true });
+  for (const [f, hosts] of [['Default/Cookies', ['.notion.so', '.www.notion.so', '.notion.so']], ['Default/Network/Cookies', ['.notion.so']]] as const) {
+    const db = new DatabaseSync(join(root, f));
+    db.exec('CREATE TABLE cookies (host_key TEXT, name TEXT)');
+    for (const h of hosts) db.prepare('INSERT INTO cookies VALUES (?, ?)').run(h, 'c');
+    db.close();
+  }
+  const { tmp, cookies } = cloneProfile(root, 'Default', ['notion.so']);
+  try {
+    assert.equal(cookies, 3);
+  } finally {
+    rmSync(root, { recursive: true });
+    rmSync(tmp, { recursive: true });
+  }
+});
+
 const existsAt = (dir: string, rel: string) => existsSync(join(dir, rel));
+
+const CREATE_COOKIES = `CREATE TABLE cookies (creation_utc, host_key, top_frame_site_key, name, value, encrypted_value,
+  path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite,
+  source_scheme, source_port, last_update_utc, source_type, has_cross_site_ancestor)`;
+
+test('cloneProfile: Chrome reads the cookies of the copy, so a logged in profile can be used from it', async (t) => {
+  const root = chromeDir(PROFILES);
+  mkdirSync(join(root, 'Default'), { recursive: true });
+  const db = new DatabaseSync(join(root, 'Default/Cookies'));
+  db.exec(CREATE_COOKIES);
+  db.prepare(`INSERT INTO cookies VALUES (1, '.notion.so', '', 'plain_probe', 'hello', x'', '/', 20000000000000000,
+    1, 0, 1, 1, 1, 1, -1, 2, 443, 1, 0, 0)`).run();
+  db.close();
+  const { tmp, cookies } = cloneProfile(root, 'Default', ['notion.so']);
+  let ctx: BrowserContext | undefined;
+  try {
+    try {
+      ctx = await chromium.launchPersistentContext(tmp, { channel: 'chrome', headless: true, args: ['--profile-directory=Default'] });
+    } catch (e) {
+      t.skip(`no Chrome to test with: ${(e as Error).message.split('\n')[0]}`);
+      return;
+    }
+    assert.equal(cookies, 1);
+    // Chrome deletes the rows it cannot decrypt, and an unreadable login is the failure this test exists for.
+    assert.deepEqual((await ctx.cookies()).map((c) => c.name), ['plain_probe']);
+  } finally {
+    await ctx?.close();
+    rmSync(root, { recursive: true });
+    rmSync(tmp, { recursive: true });
+  }
+});

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fileHost } from '../src/session.ts';
+import { checkLogin, fileHost } from '../src/session.ts';
 
 test('fileHost: Notion hosts get the profile cookies, S3 carries its own signature, anything else is refused', () => {
   for (const url of [
@@ -20,4 +20,11 @@ test('fileHost: Notion hosts get the profile cookies, S3 carries its own signatu
     'https://amazonaws.com/x',
     'http://file.notion.com/x',
   ]) assert.equal(fileHost(url), undefined, url);
+});
+
+test('checkLogin: a profile with cookies that the copy lost is reported as the copy, never as a logout', () => {
+  const profile = { dir: 'Profile 1', name: 'Me', email: null, lastUsed: false };
+  assert.throws(() => checkLogin(profile, 39, 0), { code: 'COOKIES_UNREADABLE', exit: 4, message: /none of the 39 Notion cookies/ });
+  assert.throws(() => checkLogin(profile, 0, 0), { code: 'AUTH_REQUIRED', exit: 4 });
+  assert.doesNotThrow(() => checkLogin(profile, 39, 39));
 });
