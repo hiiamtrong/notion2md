@@ -41,7 +41,10 @@ export function apiError(endpoint: string, status: number, text: string): CliErr
   if (status === 429) {
     return new CliError('RATE_LIMITED', `Notion rate limit hit on ${endpoint} (429) and the retries ran out`, 'Wait a minute and run again, or fetch less with a smaller --depth or --max-pages', 1);
   }
-  if ([400, 401, 403, 404].includes(status)) {
+  if (status === 401) {
+    return new CliError('AUTH_REQUIRED', `Notion does not accept the session behind these cookies (401 on ${endpoint})`, 'Log in to Notion again in that Chrome profile, then run again', 4);
+  }
+  if ([400, 403, 404].includes(status)) {
     return new CliError('NO_ACCESS', `Notion rejected ${endpoint} (${status})`, 'Check the page id/URL and that this Chrome profile can open the page', 4);
   }
   return new CliError('API_ERROR', `${endpoint} failed (${status}): ${text}`, undefined, 1);
@@ -313,7 +316,7 @@ export async function loadTree(api: Api, rootId: string, opts: LoadOptions = {})
   if (!store.blocks[rootId]) {
     await loadPage(api, rootId, store);
     if (!store.blocks[rootId]) {
-      throw new CliError('NO_ACCESS', `Page ${rootId} not returned by Notion`, 'The page is private to another account, deleted, or this Chrome profile is not logged in to Notion', 4);
+      throw new CliError('NO_ACCESS', `Page ${rootId} not returned by Notion`, 'The page is private to another account, deleted, or the session behind the cookies is no longer valid', 4);
     }
   }
   const expandNode = async (id: string, level: number) => {

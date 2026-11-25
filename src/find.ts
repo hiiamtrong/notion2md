@@ -104,7 +104,7 @@ export async function findRows(api: Api, dbId: string, o: FindOptions): Promise<
   const opened = await api('loadCachedPageChunkV2', { page: { id: dbId }, limit: 1, cursor: { stack: [] }, chunkNumber: 0, verticalColumns: false });
   const record = opened.recordMap?.block?.[dbId];
   const db: Block | undefined = unwrap(record);
-  if (!db) throw new CliError('NO_ACCESS', `Page ${dbId} not returned by Notion`, 'The page is private to another account, deleted, or this Chrome profile is not logged in to Notion', 4);
+  if (!db) throw new CliError('NO_ACCESS', `Page ${dbId} not returned by Notion`, 'The page is private to another account, deleted, or the session behind the cookies is no longer valid', 4);
   const collectionId = db.collection_id;
   const view = db.view_ids?.[0];
   if (!collectionId || !view) throw new CliError('BAD_INPUT', `${dbId} is a page, not a database`, 'Pass the URL of a database page, like the one listing the rows', 2);

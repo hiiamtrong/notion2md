@@ -564,9 +564,10 @@ test('writeTree: links between fetched pages become file links, databases get an
 
 // --- rate limits and failures in the middle of a crawl ---
 
-test('apiError: 429 is a rate limit, 400/401/403/404 are no access, everything else is a plain API error', () => {
+test('apiError: 429 is a rate limit, 401 is a dead session, 400/403/404 are no access, the rest is a plain API error', () => {
   assert.equal(apiError('x', 429, '').code, 'RATE_LIMITED');
-  for (const status of [400, 401, 403, 404]) assert.deepEqual([apiError('x', status, '').code, apiError('x', status, '').exit], ['NO_ACCESS', 4], String(status));
+  assert.deepEqual([apiError('x', 401, '').code, apiError('x', 401, '').exit], ['AUTH_REQUIRED', 4]);
+  for (const status of [400, 403, 404]) assert.deepEqual([apiError('x', status, '').code, apiError('x', status, '').exit], ['NO_ACCESS', 4], String(status));
   for (const status of [408, 409, 500, 502]) assert.equal(apiError('x', status, 'boom').code, 'API_ERROR', String(status));
   assert.match(apiError('queryCollection', 500, 'boom').message, /queryCollection.*500.*boom/);
 });
@@ -589,6 +590,20 @@ test('crawl: a failure on a page keeps the pages before it, reports the page it 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('crawl: a session that dies mid-crawl stops it and keeps the pages, instead of marking the rest no access', async () => {
+  const inner = workspace().api;
+  let loads = 0;
+  const dead: Api = async (endpoint, body: any) => {
+    if (endpoint === 'loadCachedPageChunkV2' && ++loads === 3) throw apiError(endpoint, 401, '');
+    return inner(endpoint, body);
+  };
+  const store = await loadTree(dead, HUB, { depth: Infinity });
+  assert.equal(store.truncated, 'error');
+  assert.match(store.error!, /401/);
+  assert.deepEqual([...store.expanded], [HUB, 'db', 'kid']);
+  assert.deepEqual([...store.noAccess.keys()], ['ghost'], 'the page that died is not filed as one that refused us');
 });
 
 test('crawl: errors that are not CliErrors are bugs and still propagate, and a failing root is still fatal', async () => {
