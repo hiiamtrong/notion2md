@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { CliError } from './errors.ts';
 import { appendEntry, readJournal, slimBlock, slimCollection, startJournal } from './journal.ts';
-import type { Api, Block, RecordMap, Store } from './types.ts';
+import type { Api, Block, RecordMap, RichText, Store } from './types.ts';
 
 const dashed = (h: string) => `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 
@@ -115,6 +115,12 @@ function absorb(store: Store, recordMap: RecordMap = {}): void {
       if (store.pending) store.pending.collections[id] = c;
     }
   }
+  for (const [table, target] of [['discussion', store.discussions], ['comment', store.comments]] as const) {
+    for (const [id, rec] of Object.entries(recordMap[table] ?? {})) {
+      const v = unwrap(rec);
+      if (v) target[id] = v;
+    }
+  }
   for (const [id, rec] of Object.entries({ ...recordMap.notion_user, ...recordMap.bot })) {
     const name = unwrap(rec)?.name;
     if (name) store.users[id] = name;
@@ -194,15 +200,17 @@ async function resolveMentions(api: Api, store: Store): Promise<void> {
   const ids = new Set<string>();
   const people = new Set<string>();
   const bots = new Set<string>();
-  for (const b of Object.values(store.blocks)) {
-    for (const runs of Object.values(b.properties ?? {})) {
-      for (const [, decos] of runs) {
-        for (const [tag, arg] of decos ?? []) {
-          if ((tag === 'p' || tag === 'eoi') && !store.blocks[arg]) ids.add(arg);
-          else if (tag === 'u' && !store.users[arg]) people.add(arg);
-        }
+  const scan = (runs: RichText = []) => {
+    for (const [, decos] of runs) {
+      for (const [tag, arg] of decos ?? []) {
+        if ((tag === 'p' || tag === 'eoi') && !store.blocks[arg]) ids.add(arg);
+        else if (tag === 'u' && !store.users[arg]) people.add(arg);
       }
     }
+  };
+  for (const c of Object.values(store.comments)) scan(c.text);
+  for (const b of Object.values(store.blocks)) {
+    for (const runs of Object.values(b.properties ?? {})) scan(runs);
     if (b.parent_table === 'collection') {
       for (const [u, table] of [[b.created_by_id, b.created_by_table], [b.last_edited_by_id, b.last_edited_by_table]]) {
         if (u && !store.users[u]) (table === 'bot' ? bots : people).add(u);
@@ -218,9 +226,26 @@ async function resolveMentions(api: Api, store: Store): Promise<void> {
   await sync(api, store, 'collection', collections);
 }
 
+async function resolveDiscussions(api: Api, store: Store): Promise<void> {
+  if (!store.spaceId) return;
+  const threads = new Set<string>();
+  for (const b of Object.values(store.blocks)) for (const d of b.discussions ?? []) if (!store.discussions[d]) threads.add(d);
+  await sync(api, store, 'discussion', [...threads]);
+  const replies = new Set<string>();
+  for (const d of Object.values(store.discussions)) for (const c of d.comments ?? []) if (!store.comments[c]) replies.add(c);
+  await sync(api, store, 'comment', [...replies]);
+  const people = new Set<string>();
+  const bots = new Set<string>();
+  for (const c of Object.values(store.comments)) {
+    if (c.alive && c.created_by_id && !store.users[c.created_by_id]) (c.created_by_table === 'bot' ? bots : people).add(c.created_by_id);
+  }
+  await sync(api, store, 'notion_user', [...people]);
+  await sync(api, store, 'bot', [...bots]);
+}
+
 export function newStore(): Store {
   return {
-    blocks: {}, collections: {}, users: {}, expanded: new Set(), children: new Map(), rows: new Map(), spaceId: undefined,
+    blocks: {}, collections: {}, users: {}, discussions: {}, comments: {}, expanded: new Set(), children: new Map(), rows: new Map(), spaceId: undefined,
     gone: new Set(), noAccess: new Map(), skipped: [], truncated: undefined, error: undefined,
   };
 }
@@ -412,6 +437,7 @@ export async function loadTree(api: Api, rootId: string, opts: LoadOptions = {})
   await Promise.all(Array.from({ length: concurrency }, worker));
   store.skipped = queue.map(([id]) => id);
   store.pending = undefined;
+  await orNoAccess(resolveDiscussions(api, store));
   await orNoAccess(resolveMentions(api, store));
   return store;
 }

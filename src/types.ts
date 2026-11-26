@@ -21,6 +21,7 @@ export interface Block {
   view_ids?: string[];
   parent_table?: string;
   parent_id?: string;
+  discussions?: string[];
 }
 
 export interface Collection {
@@ -29,11 +30,29 @@ export interface Collection {
   schema?: Record<string, { name: string; type: string }>;
 }
 
+export interface Discussion {
+  version?: number;
+  parent_id?: string;
+  resolved?: boolean;
+  comments?: string[];
+}
+
+export interface Comment {
+  version?: number;
+  text?: RichText;
+  created_time?: number;
+  created_by_id?: string;
+  created_by_table?: string;
+  alive?: boolean;
+}
+
 export interface Store {
   blocks: Record<string, Block>;
   collections: Record<string, Collection>;
   /** Records absorbed since the last journal line, only set while a crawl is being journaled. */
   pending?: { blocks: Record<string, Block>; collections: Record<string, Collection> };
+  discussions: Record<string, Discussion>;
+  comments: Record<string, Comment>;
   /** Display names of mentioned people, by Notion user id. */
   users: Record<string, string>;
   expanded: Set<string>;
@@ -60,6 +79,8 @@ export interface Rec {
 export interface RecordMap {
   block?: Record<string, Rec>;
   collection?: Record<string, Rec>;
+  discussion?: Record<string, Rec>;
+  comment?: Record<string, Rec>;
   notion_user?: Record<string, Rec>;
   /** Automations and integrations: they can be the author of a row, and have no notion_user record. */
   bot?: Record<string, Rec>;

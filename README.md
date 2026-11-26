@@ -14,6 +14,7 @@ notion2md "https://www.notion.so/team/Knowledge-Map-01234567..." --profile 70 --
 - **Private pages.** Reuses the cookies of any local Chrome profile. No Notion API key, no "share with integration".
 - **Full fidelity.** Reads Notion's block tree directly, so collapsed toggles, tables, code, callouts, equations, mentions and aliases are all rendered. Scraping the DOM misses the collapsed ones.
 - **Whole-workspace export.** `--depth` follows nested pages, links, mentions, databases and database rows, and writes one Markdown file per page with working relative links.
+- **Comments.** A comment thread is quoted under the block it is attached to, with each comment's author and time. A thread on the whole page goes at the end of that page's file. Resolved threads are marked.
 - **Database rows.** Each row becomes a file that starts with its fields (Status, Owner, ...), followed by the row's body.
 - **Resilient crawling.** Retries on rate limits (429) and slows down automatically. A crawl stopped by `--max-pages`, `--timeout`, Ctrl-C or an error still writes everything fetched so far.
 - **Agent friendly.** Machine readable `--json`, stable exit codes, progress on stderr only, input validated before Chrome starts.
@@ -249,6 +250,7 @@ Everything that can be checked up front (depth, timeout, URL host, output folder
 - Only the first view of a database is read, without filters, so all rows come back. A database with two views produces two index files listing the same rows. A database is cut at 5000 rows.
 - Row fields are exported as text. People appear as `@Name` (a user group as `@group`, its name cannot be read), relations as links, and `Created time`, `Last edited time`, `Created by` and `Last edited by` are written from the row itself. Formula columns are not exported: Notion computes them in the browser and stores no value.
 - Link previews of other services (a GitHub pull request) become `[title](url)`. Columns are flattened into the page, so their side by side layout is lost.
+- Comments are exported as text. Reactions are not exported, and deleted comments are dropped.
 - Images and attached files are only usable offline with `--assets`. Without it an image links to `notion.so/image/...` (needs the session) and a file keeps its `attachment:` source, which nothing outside Notion opens.
 - Crawling a large workspace takes minutes, see [Cost and limits](#cost-and-limits).
 - Linux and Windows are untested.

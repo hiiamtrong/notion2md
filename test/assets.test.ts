@@ -9,7 +9,7 @@ import { toMarkdown } from '../src/markdown.ts';
 import type { Api, Block, Store } from '../src/types.ts';
 
 const store = (blocks: Record<string, Block>): Store => ({
-  blocks, collections: {}, users: {}, expanded: new Set(), children: new Map(), rows: new Map(),
+  blocks, collections: {}, users: {}, discussions: {}, comments: {}, expanded: new Set(), children: new Map(), rows: new Map(),
   spaceId: 'sp', gone: new Set(), noAccess: new Map(), skipped: [], truncated: undefined, error: undefined,
 });
 const asset = (blockId: string, name: string): Asset => ({ blockId, source: `attachment:uuid:${name}`, name });

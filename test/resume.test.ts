@@ -4,8 +4,8 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apiError, loadTree } from '../src/notion.ts';
-import { JOURNAL_FILE, readJournal } from '../src/journal.ts';
-import type { Api } from '../src/types.ts';
+import { JOURNAL_FILE, readJournal, slimBlock } from '../src/journal.ts';
+import type { Api, Block } from '../src/types.ts';
 
 const ROOT = '01234567-89ab-cdef-0123-456789abcdef';
 const rec = (b: Record<string, any>) => ({ spaceId: 'sp', value: { value: { alive: true, space_id: 'sp', version: 1, crdt_data: 'x'.repeat(500), permissions: [{ role: 'editor' }], ...b }, role: 'editor' } });
@@ -87,6 +87,16 @@ test('journal: keeps only the fields the tool reads, and each record once', asyn
   } finally {
     cleanup(journal);
   }
+});
+
+test('journal: a block keeps its discussions, so a resumed crawl still knows which comments to fetch', () => {
+  const slim = slimBlock({ id: 'b', type: 'text', discussions: ['d1'], crdt_data: 'x' } as Block);
+  assert.deepEqual(slim.discussions, ['d1']);
+});
+
+test('journal: a block without discussions gets no discussions field, and an empty list is kept', () => {
+  assert.equal('discussions' in slimBlock({ id: 'b', type: 'text' } as Block), false);
+  assert.deepEqual(slimBlock({ id: 'b', type: 'text', discussions: [] } as Block).discussions, []);
 });
 
 test('concurrency: the same pages are fetched, and max-pages still stops at exactly that many', async () => {

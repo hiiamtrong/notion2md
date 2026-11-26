@@ -17,7 +17,7 @@ export interface Entry {
   refused?: [string, string][];
 }
 
-const BLOCK_FIELDS = ['id', 'type', 'version', 'created_time', 'last_edited_time', 'created_by_id', 'created_by_table', 'last_edited_by_id', 'last_edited_by_table', 'alive', 'space_id', 'content', 'properties', 'format', 'collection_id', 'view_ids', 'parent_table', 'parent_id'] as const;
+const BLOCK_FIELDS = ['id', 'type', 'version', 'created_time', 'last_edited_time', 'created_by_id', 'created_by_table', 'last_edited_by_id', 'last_edited_by_table', 'alive', 'space_id', 'content', 'properties', 'format', 'collection_id', 'view_ids', 'parent_table', 'parent_id', 'discussions'] as const;
 
 /** Only the fields the tool reads: Notion's records also carry edit history and permissions, which made a journal 10x the size of the Markdown. */
 export function slimBlock(b: Block): Block {

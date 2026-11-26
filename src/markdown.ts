@@ -1,11 +1,11 @@
 import { linkedPageId } from './notion.ts';
-import type { Block, RichText, Store } from './types.ts';
+import type { Block, Comment, RichText, Store } from './types.ts';
 
 const NOTION = 'https://www.notion.so/';
 export const pageUrl = (id: string) => NOTION + id.replaceAll('-', '');
 const NOTION_HOSTED = /^attachment:|secure\.notion-static\.com|prod-files-secure/;
 
-type Doc = Pick<Store, 'blocks' | 'collections'> & { rows?: Store['rows']; users?: Store['users'] };
+type Doc = Pick<Store, 'blocks' | 'collections'> & { rows?: Store['rows']; users?: Store['users']; discussions?: Store['discussions']; comments?: Store['comments'] };
 type Href = (pageId: string) => string;
 
 const collectionName = (id: string | undefined, store: Doc) => inlineText(id ? store.collections[id]?.name : undefined, store);
@@ -78,6 +78,8 @@ function inlineText(runs: RichText | undefined, store: Doc, href: Href = pageUrl
 }
 
 const HEADINGS = { header: '##', sub_header: '###', sub_sub_header: '####', header_4: '#####' };
+// A page reached through a link, or a database nested in a page, is written in its own file: its threads belong there.
+const LINKED = new Set(['page', 'collection_view', 'collection_view_page']);
 
 export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl, assetHref?: AssetHref): string {
   const { blocks } = store;
@@ -86,7 +88,10 @@ export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl, a
 
   // Rows of a database carry their fields (Status, Owner, ...) as properties named by the collection schema.
   const stamp = (ms?: number) => (ms ? new Date(ms).toISOString() : '');
-  const who = (id?: string) => (id ? (store.users?.[id] ? `@${store.users[id]}` : '@user') : '');
+  const who = (id?: string) => {
+    if (!id) return '';
+    return store.users?.[id] ? `@${store.users[id]}` : '@user';
+  };
   // These columns are not in `properties`: Notion keeps the values on the block itself.
   const builtin: Record<string, (b: Block) => string> = {
     created_time: (b) => stamp(b.created_time),
@@ -110,11 +115,29 @@ export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl, a
     for (const id of ids) {
       const b = blocks[id];
       if (!b || b.alive === false) continue;
-      n = b.type === 'numbered_list' ? (prev === 'numbered_list' ? n + 1 : 1) : 0;
+      if (b.type !== 'numbered_list') n = 0;
+      else n = prev === 'numbered_list' ? n + 1 : 1;
       lines.push(...block(b, indent, n));
+      if (!LINKED.has(b.type)) lines.push(...threads(b, indent));
       prev = b.type;
     }
     return lines;
+  }
+
+  function threads(b: Block, indent: number): string[] {
+    const pad = '    '.repeat(indent);
+    return (b.discussions ?? []).flatMap((did) => {
+      const d = store.discussions?.[did];
+      const shown = (d?.comments ?? []).map((id) => store.comments?.[id]).filter((c): c is Comment => !!c?.alive);
+      if (!shown.length) return [];
+      const quoted = shown.flatMap((c, i) => [
+        ...(i ? [''] : []),
+        `**${who(c.created_by_id)}** (${stamp(c.created_time)}):`,
+        ...inlineText(c.text, store, hrefOf).split('\n'),
+      ]);
+      if (d?.resolved) quoted.push('', '_Thread resolved._');
+      return ['', ...quoted.map((l) => `${pad}${l ? `> ${l}` : '>'}`), ''];
+    });
   }
 
   function block(b: Block, indent: number, n: number): string[] {
@@ -205,7 +228,7 @@ export function toMarkdown(store: Doc, rootId: string, hrefOf: Href = pageUrl, a
     }
   }
 
-  const lines = block(blocks[rootId]!, 0, 0);
+  const lines = [...block(blocks[rootId]!, 0, 0), ...threads(blocks[rootId]!, 0)];
   const out: string[] = [];
   const cover = assetHref?.(rootId);
   if (cover) out.push(`![](${cover})`, '');

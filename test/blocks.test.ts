@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { toMarkdown } from '../src/markdown.ts';
-import { loadTree } from '../src/notion.ts';
+import { apiError, loadTree } from '../src/notion.ts';
 import type { Api, ApiResponse, Block } from '../src/types.ts';
 
 const ID = '01234567-89ab-cdef-0123-456789abcdef';
@@ -89,4 +89,107 @@ test('loadTree: the author of a row can be a bot, which is looked up in the bot 
   const store = await loadTree(api, ID);
   assert.deepEqual(tables.filter((t) => !t.startsWith('collection:')).sort(), ['bot:bot1', 'notion_user:u1']);
   assert.deepEqual(store.users, { u1: 'Lu John', bot1: 'Automation' });
+});
+
+test('markdown: a block discussion is quoted under its block, a page discussion at the end, and a deleted comment is dropped', () => {
+  const blocks: Record<string, Block> = {
+    r: { id: 'r', type: 'page', properties: { title: [['T']] }, content: ['p', 'q'], discussions: ['dp'] },
+    p: { id: 'p', type: 'text', properties: { title: [['Para']] }, discussions: ['d1'] },
+    q: { id: 'q', type: 'text', properties: { title: [['Other']] }, discussions: ['d2'] },
+  };
+  const discussions: Record<string, any> = {
+    d1: { id: 'd1', parent_id: 'p', resolved: true, comments: ['c1', 'c2'] },
+    d2: { id: 'd2', parent_id: 'q', resolved: false, comments: ['c3'] },
+    dp: { id: 'dp', parent_id: 'r', resolved: false, comments: ['c4'] },
+  };
+  const comments: Record<string, any> = {
+    c1: { id: 'c1', alive: true, text: [['first line\nsecond']], created_by_id: 'u1', created_time: Date.UTC(2026, 8, 14, 8, 30) },
+    c2: { id: 'c2', alive: true, text: [['ok']], created_by_id: 'u2', created_time: Date.UTC(2026, 8, 15) },
+    c3: { id: 'c3', alive: false, text: [['deleted']], created_by_id: 'u1', created_time: 0 },
+    c4: { id: 'c4', alive: true, text: [['page note']], created_by_id: 'u1', created_time: Date.UTC(2026, 8, 16) },
+  };
+  assert.equal(
+    toMarkdown({ blocks, collections: {}, users: { u1: 'Lu John' }, discussions, comments } as any, 'r'),
+    '# T\n\nPara\n\n> **@Lu John** (2026-09-14T08:30:00.000Z):\n> first line\n> second\n>\n> **@user** (2026-09-15T00:00:00.000Z):\n> ok\n>\n> _Thread resolved._\n\nOther\n\n> **@Lu John** (2026-09-16T00:00:00.000Z):\n> page note\n',
+  );
+});
+
+test('loadTree: a discussion the page chunk leaves out is fetched, with its comments, their authors (person or bot) and the people they mention', async () => {
+  const requested: string[] = [];
+  const api: Api = async (endpoint, body: any): Promise<ApiResponse> => {
+    if (endpoint === 'loadCachedPageChunkV2') {
+      const page = { id: ID, type: 'page', properties: { title: [['Root']] }, discussions: ['d1'] };
+      return { recordMap: recordMap(page), cursors: [{ stack: [] }] };
+    }
+    const world: Record<string, Record<string, any>> = {
+      'discussion:d1': { id: 'd1', parent_id: ID, parent_table: 'block', resolved: false, comments: ['c1', 'c2'] },
+      'comment:c1': { id: 'c1', alive: true, text: [['Please check']], created_by_id: 'u1', created_by_table: 'notion_user', created_time: 1 },
+      'comment:c2': { id: 'c2', alive: true, text: [['hi '], ['‣', [['u', 'u2']]]], created_by_id: 'b1', created_by_table: 'bot', created_time: 2 },
+      'notion_user:u1': { id: 'u1', name: 'Lu John' },
+      'notion_user:u2': { id: 'u2', name: 'Anna' },
+      'bot:b1': { id: 'b1', name: 'Helper' },
+    };
+    const asked = body.requests.map((r: any) => `${r.pointer.table}:${r.pointer.id}`);
+    requested.push(...asked);
+    const out: Record<string, Record<string, any>> = {};
+    for (const key of asked.filter((k: string) => world[k])) {
+      const [table, id] = key.split(/:(.*)/s);
+      (out[table!] ??= {})[id!] = { value: { value: world[key] } };
+    }
+    return { recordMap: out };
+  };
+  const store = await loadTree(api, ID);
+  assert.deepEqual(requested.filter((t) => !t.startsWith('collection:')).sort(), ['bot:b1', 'comment:c1', 'comment:c2', 'discussion:d1', 'notion_user:u1', 'notion_user:u2']);
+  assert.equal(toMarkdown(store, ID), '# Root\n\n> **@Lu John** (1970-01-01T00:00:00.001Z):\n> Please check\n>\n> **@Helper** (1970-01-01T00:00:00.002Z):\n> hi @Anna\n');
+});
+
+/** One page that lists `discussions`; every syncRecordValues call goes to `sync`. */
+const pageWith = (discussions: string[] | undefined, sync: (body: any) => ApiResponse): Api => async (endpoint, body: any) => {
+  if (endpoint !== 'loadCachedPageChunkV2') return sync(body);
+  return { recordMap: recordMap({ id: ID, type: 'page', properties: { title: [['Root']] }, discussions }), cursors: [{ stack: [] }] };
+};
+
+test('loadTree: a refused comment lookup leaves the page without comments, any other API failure still fails the run', async () => {
+  const refused = pageWith(['d1'], () => { throw apiError('syncRecordValues', 403, ''); });
+  assert.equal(toMarkdown(await loadTree(refused, ID), ID), '# Root\n');
+  const broken = pageWith(['d1'], () => { throw apiError('syncRecordValues', 500, 'boom'); });
+  await assert.rejects(loadTree(broken, ID), { code: 'API_ERROR' });
+});
+
+test('loadTree: no discussions, an empty list, or an id Notion has no record for add no output, and only the last one costs a request', async () => {
+  const asked: string[] = [];
+  const answer = (body: any): ApiResponse => {
+    asked.push(...body.requests.map((r: any) => r.pointer.table));
+    return { recordMap: {} };
+  };
+  for (const discussions of [undefined, []]) assert.equal(toMarkdown(await loadTree(pageWith(discussions, answer), ID), ID), '# Root\n');
+  assert.deepEqual(asked, []);
+  assert.equal(toMarkdown(await loadTree(pageWith(['gone'], answer), ID), ID), '# Root\n');
+  assert.deepEqual(asked, ['discussion']);
+});
+
+test('loadTree: discussions are asked for in batches of 100, so 100 take one request and 101 take two', async () => {
+  for (const [count, batches] of [[100, [100]], [101, [100, 1]]] as const) {
+    const sizes: number[] = [];
+    const ids = Array.from({ length: count }, (_, i) => `d${i}`);
+    await loadTree(pageWith(ids, (body) => {
+      if (body.requests[0].pointer.table === 'discussion') sizes.push(body.requests.length);
+      return { recordMap: {} };
+    }), ID);
+    assert.deepEqual(sizes, batches, String(count));
+  }
+});
+
+test('markdown: a comment with no text or time, a missing comment and a missing discussion do not break the page', () => {
+  const blocks: Record<string, Block> = {
+    r: { id: 'r', type: 'page', properties: { title: [['T']] }, discussions: ['d1', 'd2', 'nope'] },
+  };
+  const discussions: Record<string, any> = {
+    d1: { id: 'd1', comments: ['gone'] },
+    d2: { id: 'd2', comments: ['bare'] },
+  };
+  const comments: Record<string, any> = { bare: { id: 'bare', alive: true, created_by_id: 'u1' } };
+  const md = toMarkdown({ blocks, collections: {}, users: { u1: 'Lu John' }, discussions, comments } as any, 'r');
+  assert.match(md, /^# T\n\n> \*\*@Lu John\*\*/);
+  assert.equal(md.match(/\*\*@/g)?.length, 1);
 });
