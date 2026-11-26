@@ -1,6 +1,6 @@
 import { rmSync } from 'node:fs';
 import { chromium, type BrowserContext } from 'playwright-core';
-import { cloneProfile, type Profile } from './chrome.ts';
+import { cloneProfile, keychainPassword, readCookies, type Profile } from './chrome.ts';
 import { CliError } from './errors.ts';
 import { apiError, createPacer } from './notion.ts';
 import type { Api, ApiResponse } from './types.ts';
@@ -56,6 +56,9 @@ export async function withSession<T>(o: SessionOptions, work: (api: Api, downloa
   const { profile, log } = o;
   // The cookie copy exists before Chrome does, so it is removable from the first instant, Ctrl-C included.
   const { tmp, cookies: kept } = cloneProfile(o.root, profile.dir, ['notion.so', 'notion.com', 'notion.site']);
+  // Read before Chrome opens the copy and drops what it cannot decrypt, then handed to Chrome as plain cookies.
+  const password = o.channel === 'chrome' ? keychainPassword() : undefined;
+  const decrypted = password ? readCookies(tmp, profile.dir, password) : [];
   let ctx: BrowserContext | undefined;
   const cleanup = async () => {
     await ctx?.close().catch(() => {});
@@ -89,6 +92,7 @@ export async function withSession<T>(o: SessionOptions, work: (api: Api, downloa
     }
 
     const page = ctx.pages()[0] ?? (await ctx.newPage());
+    if (decrypted.length) await ctx.addCookies(decrypted);
     checkLogin(profile, kept, (await ctx.cookies()).length);
     log(`Opening ${o.url}`);
     await page.goto(o.url, { waitUntil: 'domcontentloaded' });

@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { createDecipheriv, createHash, pbkdf2Sync } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { homedir, tmpdir } from 'node:os';
@@ -96,4 +98,65 @@ function keepCookies(file: string, hosts: string[]): number {
   } finally {
     db.close();
   }
+}
+
+export interface SessionCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  secure: boolean;
+  httpOnly: boolean;
+  sameSite: 'Lax';
+}
+
+/** The key Chrome encrypts cookies with. Only macOS Chrome is handled: undefined elsewhere, and when the Keychain refuses. */
+export function keychainPassword(): string | undefined {
+  if (process.platform !== 'darwin') return undefined;
+  try {
+    return execFileSync('security', ['find-generic-password', '-w', '-s', 'Chrome Safe Storage', '-a', 'Chrome'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return undefined;
+  }
+}
+
+// Chrome 130+ puts sha256(host_key) in front of the value, so a cookie cannot be replayed on another host.
+function decryptCookie(key: Buffer, host: string, stored: Uint8Array): string | undefined {
+  const enc = Buffer.from(stored);
+  if (enc.subarray(0, 3).toString() !== 'v10') return undefined;
+  try {
+    const decipher = createDecipheriv('aes-128-cbc', key, Buffer.alloc(16, 0x20));
+    const plain = Buffer.concat([decipher.update(enc.subarray(3)), decipher.final()]);
+    const hashed = plain.length >= 32 && plain.subarray(0, 32).equals(createHash('sha256').update(host).digest());
+    return (hashed ? plain.subarray(32) : plain).toString('utf8');
+  } catch {
+    // A key that does not belong to this profile gives bad padding: the cookie is unreadable, not a crash.
+    return undefined;
+  }
+}
+
+/**
+ * Decrypts the cookies of a `cloneProfile` copy. It has to run before Chrome opens the copy: a Chrome that decrypts
+ * per profile deletes the rows it cannot read, which is why the copy alone cannot log in.
+ */
+export function readCookies(tmp: string, dir: string, password: string): SessionCookie[] {
+  const key = pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1');
+  const found = new Map<string, SessionCookie>();
+  for (const f of ['Cookies', 'Network/Cookies']) {
+    const file = join(tmp, dir, f);
+    if (!existsSync(file)) continue;
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      const rows = db.prepare('SELECT host_key, name, path, is_secure, is_httponly, encrypted_value FROM cookies').all() as
+        { host_key: string; name: string; path: string; is_secure: number; is_httponly: number; encrypted_value: Uint8Array }[];
+      for (const r of rows) {
+        const value = decryptCookie(key, r.host_key, r.encrypted_value);
+        if (value === undefined) continue;
+        found.set(`${r.host_key}|${r.path}|${r.name}`, { name: r.name, value, domain: r.host_key, path: r.path, secure: r.is_secure === 1, httpOnly: r.is_httponly === 1, sameSite: 'Lax' });
+      }
+    } finally {
+      db.close();
+    }
+  }
+  return [...found.values()];
 }

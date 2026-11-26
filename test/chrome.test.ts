@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createCipheriv, createHash, pbkdf2Sync } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { chromium, type BrowserContext } from 'playwright-core';
-import { cloneProfile, listProfiles, resolveProfile } from '../src/chrome.ts';
+import { cloneProfile, listProfiles, readCookies, resolveProfile } from '../src/chrome.ts';
 
 function chromeDir(info_cache: Record<string, { name?: string; user_name?: string }>, last_used?: string) {
   const root = mkdtempSync(join(tmpdir(), 'notion2md-chrome-'));
@@ -169,5 +170,43 @@ test('cloneProfile: Chrome reads the cookies of the copy, so a logged in profile
     await ctx?.close();
     rmSync(root, { recursive: true });
     rmSync(tmp, { recursive: true });
+  }
+});
+
+/** What macOS Chrome stores: "v10" + AES-128-CBC, and since Chrome 130 sha256(host) in front of the value. */
+function encrypt(password: string, host: string, value: string, hostHash: boolean, version = 'v10') {
+  const cipher = createCipheriv('aes-128-cbc', pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1'), Buffer.alloc(16, 0x20));
+  const plain = Buffer.concat([hostHash ? createHash('sha256').update(host).digest() : Buffer.alloc(0), Buffer.from(value)]);
+  return Buffer.concat([Buffer.from(version), cipher.update(plain), cipher.final()]);
+}
+
+test('readCookies: decrypts both cookie layouts, drops the host hash, and skips what it cannot read', () => {
+  const root = mkdtempSync(join(tmpdir(), 'notion2md-cookies-'));
+  const insert = (file: string, rows: [host: string, name: string, secure: number, httpOnly: number, enc: Uint8Array][]) => {
+    mkdirSync(join(root, 'Default', file, '..'), { recursive: true });
+    const db = new DatabaseSync(join(root, 'Default', file));
+    db.exec(CREATE_COOKIES);
+    const add = db.prepare('INSERT INTO cookies (host_key, name, path, is_secure, is_httponly, encrypted_value) VALUES (?, ?, ?, ?, ?, ?)');
+    for (const [host, name, secure, httpOnly, enc] of rows) add.run(host, name, '/', secure, httpOnly, enc);
+    db.close();
+  };
+  try {
+    insert('Cookies', [
+      ['.notion.so', 'token_v2', 1, 1, encrypt('pw', '.notion.so', 'secret', true)],
+      ['.notion.so', 'old_style', 1, 0, encrypt('pw', '.notion.so', 'no-hash', false)],
+      ['.notion.so', 'wrong_key', 1, 0, encrypt('other', '.notion.so', 'x', true)],
+      ['.notion.so', 'v11', 1, 0, encrypt('pw', '.notion.so', 'x', true, 'v11')],
+      ['.notion.so', 'plain', 1, 0, new Uint8Array()],
+    ]);
+    insert('Network/Cookies', [['.notion.com', 'notion_user_id', 0, 0, encrypt('pw', '.notion.com', 'u1', true)]]);
+    const got = readCookies(root, 'Default', 'pw');
+    assert.deepEqual(got.map((c) => [c.domain, c.name, c.value, c.secure, c.httpOnly]).sort(), [
+      ['.notion.com', 'notion_user_id', 'u1', false, false],
+      ['.notion.so', 'old_style', 'no-hash', true, false],
+      ['.notion.so', 'token_v2', 'secret', true, true],
+    ]);
+    assert.deepEqual(readCookies(mkdtempSync(join(tmpdir(), 'notion2md-nocookies-')), 'Default', 'pw'), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

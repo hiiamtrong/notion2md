@@ -233,7 +233,7 @@ Everything that can be checked up front (depth, timeout, URL host, output folder
 ## How it works
 
 1. **Copy the login.** `Local State` and the Notion cookies of the chosen profile are copied to a temporary directory. Chrome refuses automation on its real data directory and locks a profile that is open, so working on a copy lets Chrome stay running. The copy is deleted when the tool exits, including on Ctrl-C and SIGTERM.
-   A Chrome that decrypts cookies per profile deletes the copied ones at launch, and expired cookies are dropped too. The tool checks the copy for cookies before it calls Notion and fails with `COOKIES_UNREADABLE`, naming the copy, so a logged in profile is never reported as a logout.
+   A Chrome that decrypts cookies per profile deletes the copied ones at launch, and expired cookies are dropped too. On macOS with `--channel chrome` the tool therefore decrypts the copied cookies itself first (with the "Chrome Safe Storage" key from the Keychain) and hands them to the browser as plain cookies. Elsewhere, or when the Keychain refuses, it relies on Chrome reading the copy. The tool checks for cookies before it calls Notion and fails with `COOKIES_UNREADABLE`, naming the copy, so a logged in profile is never reported as a logout.
 2. **Open Notion.** The page loads in headless Chrome using that copy.
 3. **Call the web API from inside the page.** `loadCachedPageChunkV2`, `syncRecordValues` and `queryCollection` are called with `fetch` from the page itself. They run with the profile's cookies and Chrome's own network stack and return the full block tree, including blocks that are collapsed in the UI.
 4. **Render.** Blocks are converted to Markdown. Links to pages that were fetched are rewritten to relative file links.
